@@ -6,6 +6,10 @@ import { Activity, Zap, LogOut, TrendingUp, RefreshCw } from 'lucide-react';
 
 const INDICES = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY'];
 
+// 🟢 Dynamic API & WebSocket URLs Configuration
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
+const WS_BASE_URL = API_BASE_URL.replace(/^http/, 'ws').replace(/\/api\/v1$/, '');
+
 export default function Dashboard() {
   const { user, loginWithGoogleToken, logout } = useAuth();
   const [selectedIndex, setSelectedIndex] = useState('NIFTY');
@@ -29,10 +33,11 @@ export default function Dashboard() {
     };
   }, [selectedIndex]);
 
-  const connectWebSocket = (indexName) => {
+ const connectWebSocket = (indexName) => {
     if (wsRef.current) wsRef.current.close();
 
-    const wsUrl = `ws://localhost:8000/api/v1/market/ws/${indexName}`;
+    // 🟢 Uses Dynamic WS URL
+    const wsUrl = `${WS_BASE_URL}/api/v1/market/ws/${indexName}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -59,7 +64,7 @@ export default function Dashboard() {
 
   const fetchSignalsLog = async () => {
     try {
-      const res = await axios.get('/api/v1/signals/automated-signals-log');
+      const res = await axios.get(`${API_BASE_URL}/signals/automated-signals-log`);
       if (res.data.success) {
         setSignalsLog(res.data.logs);
       }
@@ -69,7 +74,7 @@ export default function Dashboard() {
   const handleDecodeSignal = async (isForce = false) => {
     setLoadingDecode(true);
     try {
-      const endpoint = isForce ? '/api/v1/signals/decode-force' : '/api/v1/signals/decode';
+      const endpoint = isForce ? `${API_BASE_URL}/signals/decode-force` : `${API_BASE_URL}/signals/decode`;
       const res = await axios.post(endpoint, { index_name: selectedIndex });
       if (res.data.success) {
         setActiveSignal(res.data.data);
