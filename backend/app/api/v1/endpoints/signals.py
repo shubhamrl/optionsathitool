@@ -400,8 +400,8 @@ async def batch_live_ltp_update(
                 )
                 
                 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 # 5. GET /api/v1/signals/admin/today-stats
-# Admin Metric: Aggregates total users, today's total trades, targets & SL hits
 # ----------------------------------------------------------------------------
 @router.get("/admin/today-stats")
 async def get_admin_today_stats(
@@ -427,8 +427,7 @@ async def get_admin_today_stats(
 
 
 # ----------------------------------------------------------------------------
-# 6. GET /api/v1/signals/admin/user-trades/{user_id}
-# Admin Metric: Retrieve today's trades for a specific selected user
+# 6. GET /api/v1/signals/admin/user-trades/{target_user_id}
 # ----------------------------------------------------------------------------
 @router.get("/admin/user-trades/{target_user_id}")
 async def get_admin_user_trades(
@@ -449,5 +448,4 @@ async def get_admin_user_trades(
         trades.append(doc)
 
     return {"success": True, "count": len(trades), "trades": trades}
-
     return {"success": True, "prices": prices}
