@@ -12,6 +12,28 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem('optionsaathi_token') || null);
   const [loading, setLoading] = useState(true);
+  const [serverWakingUp, setServerWakingUp] = useState(true);
+
+  // 🟢 Ping Backend to handle Render Cold Start (Sleep mode wake up)
+  const pingBackendHealth = async () => {
+    let connected = false;
+    while (!connected) {
+      try {
+        const res = await axios.get(`${BACKEND_HOST}/`, { timeout: 5000 });
+        if (res.status === 200) {
+          connected = true;
+          setServerWakingUp(false);
+        }
+      } catch (err) {
+        // Wait 3 seconds and retry until Render wakes up
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+    }
+  };
+
+  useEffect(() => {
+    pingBackendHealth();
+  }, []);
 
   useEffect(() => {
     if (token) {
@@ -22,7 +44,7 @@ export const AuthProvider = ({ children }) => {
     }
   }, [token]);
 
- const fetchUserProfile = async () => {
+  const fetchUserProfile = async () => {
     try {
       const res = await axios.get(`${API_BASE_URL}/auth/me`);
       if (res.data.success) {
@@ -59,7 +81,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, loginWithGoogleToken, logout }}>
+    <AuthContext.Provider value={{ user, token, loading, serverWakingUp, loginWithGoogleToken, logout }}>
       {children}
     </AuthContext.Provider>
   );
