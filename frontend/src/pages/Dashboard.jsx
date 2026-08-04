@@ -2,12 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { GoogleLogin } from '@react-oauth/google';
-import { Activity, Zap, LogOut, TrendingUp, RefreshCw } from 'lucide-react';
+import { Activity, Zap, LogOut, RefreshCw } from 'lucide-react';
 
 const INDICES = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY'];
 
-// 🟢 Explicit Production & Local API Base URLs (No double /api/v1 prefixing)
-const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+// 🟢 Dynamic Host Setup for Local vs Production
+const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
 const BACKEND_HOST = isLocal 
   ? 'http://localhost:8000' 
@@ -18,6 +18,7 @@ const API_BASE_URL = `${BACKEND_HOST}/api/v1`;
 const WS_BASE_URL = isLocal 
   ? 'ws://localhost:8000' 
   : 'wss://optionsathitool.onrender.com';
+
 export default function Dashboard() {
   const { user, loginWithGoogleToken, logout } = useAuth();
   const [selectedIndex, setSelectedIndex] = useState('NIFTY');
@@ -31,20 +32,20 @@ export default function Dashboard() {
   
   const wsRef = useRef(null);
 
-  // 🟢 Connect Real-time App WebSocket for Selected Index
-  useEffect(() => {
-    connectWebSocket(selectedIndex);
-    fetchSignalsLog();
+  const fetchSignalsLog = async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/signals/automated-signals-log`);
+      if (res.data && res.data.success) {
+        setSignalsLog(res.data.logs || []);
+      }
+    } catch (e) {
+      console.error("Fetch Signals Error:", e);
+    }
+  };
 
-    return () => {
-      if (wsRef.current) wsRef.current.close();
-    };
-  }, [selectedIndex]);
-
- const connectWebSocket = (indexName) => {
+  const connectWebSocket = (indexName) => {
     if (wsRef.current) wsRef.current.close();
 
-    // 🟢 Uses Dynamic WS URL
     const wsUrl = `${WS_BASE_URL}/api/v1/market/ws/${indexName}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -56,12 +57,10 @@ export default function Dashboard() {
         const message = JSON.parse(event.data);
         if (message.type === 'TICKER_STREAM') {
           const indexStore = message.data || {};
-          // Update Live Spot
           if (indexStore.spot && indexStore.spot > 0) {
             setLiveSpot(indexStore.spot);
           }
         } else if (message.type === 'SIGNAL_STATUS_UPDATE') {
-          // Live status update for active trade
           fetchSignalsLog();
         }
       } catch (e) {}
@@ -70,43 +69,26 @@ export default function Dashboard() {
     ws.onclose = () => setWsConnected(false);
   };
 
- const fetchSignalsLog = async () => {
-    try {
-      const res = await axios.get(`${API_BASE_URL}/signals/automated-signals-log`);
-      if (res.data.success) {
-        setSignalsLog(res.data.logs);
-      }
-    } catch (e) {
-      console.error("Signals Log Fetch Error:", e);
-    }
-  };
+  useEffect(() => {
+    connectWebSocket(selectedIndex);
+    fetchSignalsLog();
+
+    return () => {
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, [selectedIndex]);
 
   const handleDecodeSignal = async (isForce = false) => {
     setLoadingDecode(true);
     try {
       const endpoint = isForce ? `${API_BASE_URL}/signals/decode-force` : `${API_BASE_URL}/signals/decode`;
       const res = await axios.post(endpoint, { index_name: selectedIndex });
-      if (res.data.success) {
+      if (res.data && res.data.success) {
         setActiveSignal(res.data.data);
         fetchSignalsLog();
       }
     } catch (e) {
       console.error("Decode Signal Error:", e);
-    } finally {
-      setLoadingDecode(false);
-    }
-  };
-
-  const handleDecodeSignal = async (isForce = false) => {
-    setLoadingDecode(true);
-    try {
-      const endpoint = isForce ? `${API_BASE_URL}/signals/decode-force` : `${API_BASE_URL}/signals/decode`;
-      const res = await axios.post(endpoint, { index_name: selectedIndex });
-      if (res.data.success) {
-        setActiveSignal(res.data.data);
-        fetchSignalsLog();
-      }
-    } catch (e) {
     } finally {
       setLoadingDecode(false);
     }
@@ -168,7 +150,7 @@ export default function Dashboard() {
           ))}
         </div>
 
-        {/* 🟢 Live Market Ticker Grid With Flashing Spot Numbers */}
+        {/* Live Market Ticker Grid */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
           <div className="bg-slate-900/60 border border-slate-800 p-5 rounded-2xl relative overflow-hidden">
             <p className="text-xs font-medium text-slate-400 mb-1">{selectedIndex} SPOT PRICE</p>
@@ -250,7 +232,7 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* 🟢 Live Trade Logs Table with Real-time Status Locks */}
+        {/* Live Trade Logs Table */}
         <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-6">
           <div className="flex justify-between items-center mb-4">
             <h3 className="text-lg font-bold text-slate-200">Today's Automated Trade Logs</h3>
@@ -272,8 +254,8 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {signalsLog.map((sig) => (
-                  <tr key={sig._id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                {signalsLog.map((sig, idx) => (
+                  <tr key={sig._id || idx} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                     <td className="p-3 font-semibold">{sig.index_name || 'NIFTY'}</td>
                     <td className={`p-3 font-bold ${sig.signal === 'BUY CALL' ? 'text-emerald-400' : 'text-red-400'}`}>{sig.signal}</td>
                     <td className="p-3 font-medium">{sig.strike}</td>
