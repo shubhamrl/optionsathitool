@@ -8,8 +8,7 @@ const INDICES = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY'];
 
 // 🟢 Dynamic API & WebSocket URLs Configuration
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
-const WS_BASE_URL = API_BASE_URL.replace(/^http/, 'ws').replace(/\/api\/v1$/, '');
-
+const WS_BASE_URL = API_BASE_URL.replace(/^https/, 'wss').replace(/^http/, 'ws').replace(/\/api\/v1$/, '');
 export default function Dashboard() {
   const { user, loginWithGoogleToken, logout } = useAuth();
   const [selectedIndex, setSelectedIndex] = useState('NIFTY');
