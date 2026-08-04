@@ -3,6 +3,11 @@ import axios from 'axios';
 
 const AuthContext = createContext();
 
+// 🟢 Dynamic Backend API URL Configuration
+const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+const BACKEND_HOST = isLocal ? 'http://localhost:8000' : 'https://optionsathitool.onrender.com';
+const API_BASE_URL = `${BACKEND_HOST}/api/v1`;
+
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem('optionsaathi_token') || null);
@@ -17,9 +22,9 @@ export const AuthProvider = ({ children }) => {
     }
   }, [token]);
 
-  const fetchUserProfile = async () => {
+ const fetchUserProfile = async () => {
     try {
-      const res = await axios.get('/api/v1/auth/me');
+      const res = await axios.get(`${API_BASE_URL}/auth/me`);
       if (res.data.success) {
         setUser(res.data.user);
       }
@@ -32,7 +37,7 @@ export const AuthProvider = ({ children }) => {
 
   const loginWithGoogleToken = async (googleIdToken) => {
     try {
-      const res = await axios.post('/api/v1/auth/google', { id_token: googleIdToken });
+      const res = await axios.post(`${API_BASE_URL}/auth/google`, { id_token: googleIdToken });
       if (res.data.success) {
         const { access_token, user: userData } = res.data;
         localStorage.setItem('optionsaathi_token', access_token);
