@@ -6,9 +6,18 @@ import { Activity, Zap, LogOut, TrendingUp, RefreshCw } from 'lucide-react';
 
 const INDICES = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY'];
 
-// 🟢 Dynamic API & WebSocket URLs Configuration
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
-const WS_BASE_URL = API_BASE_URL.replace(/^https/, 'wss').replace(/^http/, 'ws').replace(/\/api\/v1$/, '');
+// 🟢 Explicit Production & Local API Base URLs (No double /api/v1 prefixing)
+const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
+const BACKEND_HOST = isLocal 
+  ? 'http://localhost:8000' 
+  : 'https://optionsathitool.onrender.com';
+
+const API_BASE_URL = `${BACKEND_HOST}/api/v1`;
+
+const WS_BASE_URL = isLocal 
+  ? 'ws://localhost:8000' 
+  : 'wss://optionsathitool.onrender.com';
 export default function Dashboard() {
   const { user, loginWithGoogleToken, logout } = useAuth();
   const [selectedIndex, setSelectedIndex] = useState('NIFTY');
@@ -61,13 +70,31 @@ export default function Dashboard() {
     ws.onclose = () => setWsConnected(false);
   };
 
-  const fetchSignalsLog = async () => {
+ const fetchSignalsLog = async () => {
     try {
       const res = await axios.get(`${API_BASE_URL}/signals/automated-signals-log`);
       if (res.data.success) {
         setSignalsLog(res.data.logs);
       }
-    } catch (e) {}
+    } catch (e) {
+      console.error("Signals Log Fetch Error:", e);
+    }
+  };
+
+  const handleDecodeSignal = async (isForce = false) => {
+    setLoadingDecode(true);
+    try {
+      const endpoint = isForce ? `${API_BASE_URL}/signals/decode-force` : `${API_BASE_URL}/signals/decode`;
+      const res = await axios.post(endpoint, { index_name: selectedIndex });
+      if (res.data.success) {
+        setActiveSignal(res.data.data);
+        fetchSignalsLog();
+      }
+    } catch (e) {
+      console.error("Decode Signal Error:", e);
+    } finally {
+      setLoadingDecode(false);
+    }
   };
 
   const handleDecodeSignal = async (isForce = false) => {
