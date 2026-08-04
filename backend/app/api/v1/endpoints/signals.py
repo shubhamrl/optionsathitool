@@ -398,5 +398,56 @@ async def batch_live_ltp_update(
                     {"_id": sig["_id"], "status": "ACTIVE"},
                     {"$set": {"status": updated_status, "exit_ltp": live_price, "updated_at": datetime.utcnow()}}
                 )
+                
+                # ----------------------------------------------------------------------------
+# 5. GET /api/v1/signals/admin/today-stats
+# Admin Metric: Aggregates total users, today's total trades, targets & SL hits
+# ----------------------------------------------------------------------------
+@router.get("/admin/today-stats")
+async def get_admin_today_stats(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    total_users = await db.users.count_documents({})
+    total_trades = await db.signals.count_documents({"created_at": {"$gte": today_start}})
+    target_hits = await db.signals.count_documents({"created_at": {"$gte": today_start}, "status": "TARGET_HIT"})
+    sl_hits = await db.signals.count_documents({"created_at": {"$gte": today_start}, "status": "SL_HIT"})
+
+    return {
+        "success": True,
+        "stats": {
+            "total_users": total_users,
+            "total_trades": total_trades,
+            "target_hits": target_hits,
+            "sl_hits": sl_hits
+        }
+    }
+
+
+# ----------------------------------------------------------------------------
+# 6. GET /api/v1/signals/admin/user-trades/{user_id}
+# Admin Metric: Retrieve today's trades for a specific selected user
+# ----------------------------------------------------------------------------
+@router.get("/admin/user-trades/{target_user_id}")
+async def get_admin_user_trades(
+    target_user_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    cursor = db.signals.find({
+        "user_id": target_user_id,
+        "created_at": {"$gte": today_start}
+    }).sort("created_at", -1)
+
+    trades = []
+    async for doc in cursor:
+        doc["_id"] = str(doc["_id"])
+        trades.append(doc)
+
+    return {"success": True, "count": len(trades), "trades": trades}
 
     return {"success": True, "prices": prices}
