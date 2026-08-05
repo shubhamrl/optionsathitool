@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.core.database import connect_to_mongo, close_mongo_connection
 from app.services.dhan_websocket import dhan_ws_client
 from app.api.v1.endpoints import signals, market_data, auth
+from app.api.v1.endpoints import paper_trade
 
 # Logger Setup
 logging.basicConfig(
@@ -75,6 +76,7 @@ app.include_router(signals.router, prefix=f"{settings.API_V1_STR}/signals", tags
 
 # 3. Market Data & Real-Time WebSockets Routes (/mood-live, /ws/{index_name})
 app.include_router(market_data.router, prefix=f"{settings.API_V1_STR}/market", tags=["Market Data & WebSockets"])
+app.include_router(paper_trade.router, prefix="/api/v1/paper", tags=["paper-trading"])
 
 
 # ----------------------------------------------------------------------------
