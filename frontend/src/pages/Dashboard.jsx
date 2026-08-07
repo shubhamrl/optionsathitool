@@ -31,10 +31,19 @@ export default function Dashboard() {
   const [placingPaperTrade, setPlacingPaperTrade] = useState(false);
   const [exitingAll, setExitingAll] = useState(false);
 
+  // 🔒 Duplicate-trade guard — set to signal._id jab uske liye trade execute ho jaaye.
+  // Naya DECODE SIGNAL aane par reset ho jaata hai.
+  const [executedTradeSignalId, setExecutedTradeSignalId] = useState(null);
   // 🔴 REAL live LTP per security_id — populated ONLY from backend WebSocket ticks.
   // Koi simulated/derived formula nahi — agar tick nahi aaya, to buy_price fallback dikhta hai
   // (isLive flag se UI me clearly distinguish hota hai).
   const [optionLtpStore, setOptionLtpStore] = useState({});
+
+  // 🔴 Har index ka live spot price — TRADING aur PAPER dono tabs ke niche
+  // ticker strip me dikhane ke liye. Backend WebSocket tick se hi populate hota hai.
+  const [indicesLiveData, setIndicesLiveData] = useState({
+    NIFTY: 0, BANKNIFTY: 0, SENSEX: 0, FINNIFTY: 0
+  });
   // Admin States
   const [adminStats, setAdminStats] = useState({ total_users: 0, total_trades: 0, target_hits: 0, sl_hits: 0 });
   const [usersList, setUsersList] = useState([]);
@@ -98,7 +107,12 @@ export default function Dashboard() {
         if (message.type === 'TICKER_STREAM') {
           const indexStore = message.data || {};
 
-          // Sirf currently selected tab ke summary cards update karo
+          // Ticker strip (sabhi 4 indices) hamesha update — chahe koi bhi tab/index selected ho
+          if (indexStore.spot && indexStore.spot > 0) {
+            setIndicesLiveData(prev => ({ ...prev, [indexName]: indexStore.spot }));
+          }
+
+          // Sirf currently selected index ke summary cards (SPOT/PCR/REGIME) update karo
           if (indexName === selectedIndex) {
             if (indexStore.spot && indexStore.spot > 0) setLiveSpot(indexStore.spot);
             if (typeof indexStore.pcr === 'number') setPcr(indexStore.pcr);
@@ -148,25 +162,15 @@ export default function Dashboard() {
     }
   }, [selectedIndex, user]);
 
-  // 🔌 WebSocket connections manage karo: selected tab + har OPEN position ka index
+ // 🔌 Login hote hi saare 4 indices (NIFTY, BANKNIFTY, SENSEX, FINNIFTY) ke WebSocket
+  // connections permanently khol do — ticker strip aur open positions (kisi bhi index ki ho)
+  // dono ko hamesha live data chahiye, isliye ab selectedIndex par depend nahi karte.
   useEffect(() => {
     if (!user) return;
-
-    const requiredIndices = new Set([selectedIndex]);
-    paperPositions
-      .filter(p => p.status === 'OPEN')
-      .forEach(p => requiredIndices.add(p.index_name));
-
-    requiredIndices.forEach(idx => {
+    INDICES.forEach(idx => {
       if (!wsRefs.current[idx]) connectIndexWebSocket(idx);
     });
-
-    // Jo index ab kisi open position ya selected tab me nahi hai, uska connection band karo
-    Object.keys(wsRefs.current).forEach(idx => {
-      if (!requiredIndices.has(idx)) disconnectIndexWebSocket(idx);
-    });
-  }, [selectedIndex, user, paperPositions]);
-
+  }, [user]);
   // Unmount par saare WS connections cleanup karo
   useEffect(() => {
     return () => {
@@ -175,23 +179,26 @@ export default function Dashboard() {
     };
   }, []);
 
-  const handleDecodeSignal = async (isForce = false) => {
+   const handleDecodeSignal = async (isForce = false) => {
     setLoadingDecode(true);
     try {
       const endpoint = isForce ? `${API_BASE_URL}/signals/decode-force` : `${API_BASE_URL}/signals/decode`;
       const res = await axios.post(endpoint, { index_name: selectedIndex });
       if (res.data && res.data.success) {
         setActiveSignal(res.data.data);
+        setExecutedTradeSignalId(null); // naya signal — purana execute-lock reset
         fetchSignalsLog();
       }
     } catch (e) {} finally { setLoadingDecode(false); }
   };
 
-  const handleExecutePaperTrade = async () => {
-    if (!activeSignal) return;
+const handleExecutePaperTrade = async () => {
+    if (!activeSignal || activeSignal.signal === 'NO TRADE') return;
+    if (executedTradeSignalId === activeSignal._id) return; // already executed
+
     setPlacingPaperTrade(true);
     try {
-            const res = await axios.post(`${API_BASE_URL}/paper/place-trade`, {
+      const res = await axios.post(`${API_BASE_URL}/paper/place-trade`, {
         index_name: selectedIndex,
         signal: activeSignal.signal,
         strike: activeSignal.strike,
@@ -204,6 +211,7 @@ export default function Dashboard() {
       });
       if (res.data && res.data.success) {
         alert("🎉 Paper Order Executed Successfully!");
+        setExecutedTradeSignalId(activeSignal._id); // 🔒 lock button — naya decode tak
         fetchPaperData();
       }
     } catch (e) {
@@ -342,7 +350,57 @@ const openPositionsList = paperPositions.filter(p => p.status === 'OPEN');
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 md:px-6 py-6">
+      {/* 🔴 Live Multi-Index Ticker Strip — TRADING aur PAPER dono tabs me hamesha dikhta hai */}
+      <div className="border-b border-slate-800 bg-slate-900/40 px-4 md:px-6 py-2 overflow-x-auto no-scrollbar">
+        <div className="max-w-7xl mx-auto flex items-center gap-4 md:gap-6 text-xs md:text-sm">
+          {INDICES.map((idx) => (
+            <button
+              key={idx}
+              onClick={() => setSelectedIndex(idx)}
+              className={`flex items-center gap-1.5 whitespace-nowrap px-2 py-1 rounded-lg transition-all ${selectedIndex === idx ? 'bg-indigo-600/20 border border-indigo-500/40' : 'hover:bg-slate-800/40'}`}
+            >
+              <span className={`font-bold ${selectedIndex === idx ? 'text-indigo-300' : 'text-slate-400'}`}>{idx}</span>
+              <span className="font-extrabold text-slate-100">
+                {indicesLiveData[idx] > 0 ? `₹${indicesLiveData[idx].toLocaleString('en-IN')}` : '...'}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+       <main className="max-w-7xl mx-auto px-4 md:px-6 py-6">
+        {/* 🎯 Mini Live Positions PnL Strip — sirf TRADING tab par, taaki baar baar PAPER tab
+            check karne ki zaroorat na pade. Same getLivePositionMetrics logic use hota hai
+            jo PAPER tab ki table use karti hai — koi alag/duplicate calculation nahi. */}
+        {activeTab === 'TRADING' && openPositionsList.length > 0 && (
+          <div className="mb-4 bg-slate-900/50 border border-slate-800 rounded-2xl px-3 py-2 overflow-x-auto no-scrollbar">
+            <div className="flex items-center gap-3 text-xs">
+              <span className="text-slate-500 font-semibold shrink-0 flex items-center gap-1">
+                <Wallet className="w-3.5 h-3.5 text-cyan-400" /> Open Positions:
+              </span>
+              {openPositionsList.map((p) => {
+                const { pnl, isLive } = getLivePositionMetrics(p);
+                return (
+                  <div
+                    key={p._id}
+                    onClick={() => setActiveTab('PAPER')}
+                    className="flex items-center gap-1.5 whitespace-nowrap bg-slate-950/60 border border-slate-800 rounded-lg px-2.5 py-1 cursor-pointer hover:border-indigo-500/40 transition-all"
+                    title="Poori detail PAPER tab me dekhein"
+                  >
+                    <span className="font-semibold text-slate-300">{p.strike}</span>
+                    <span className={`font-extrabold ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'} ${isLive ? '' : 'opacity-50'}`}>
+                      {pnl >= 0 ? `+₹${pnl}` : `-₹${Math.abs(pnl)}`}
+                    </span>
+                  </div>
+                );
+              })}
+              <span className={`ml-auto font-extrabold shrink-0 ${totalUnrealizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                Total: {totalUnrealizedPnl >= 0 ? `+₹${totalUnrealizedPnl.toLocaleString('en-IN')}` : `-₹${Math.abs(totalUnrealizedPnl).toLocaleString('en-IN')}`}
+              </span>
+            </div>
+          </div>
+        )}
+
         {activeTab === 'TRADING' && (
           <>
             <div className="flex gap-2 mb-6 bg-slate-900/80 p-1.5 rounded-2xl border border-slate-800 overflow-x-auto no-scrollbar">
@@ -388,7 +446,49 @@ const openPositionsList = paperPositions.filter(p => p.status === 'OPEN');
                 </div>
               </div>
 
-              {activeSignal && (
+              {activeSignal && activeSignal.signal === 'NO TRADE' && (
+                <div className="bg-slate-950/80 border border-amber-500/30 p-5 rounded-2xl mt-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <AlertTriangle className="w-5 h-5 text-amber-400" />
+                    <h3 className="text-lg font-bold text-amber-300">NO TRADE — AI Waiting for Confluence</h3>
+                  </div>
+
+                  {activeSignal.reasons && activeSignal.reasons.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-xs font-bold text-slate-400 uppercase mb-1.5">Reasons</p>
+                      <ul className="space-y-1">
+                        {activeSignal.reasons.map((r, i) => (
+                          <li key={i} className="text-xs text-slate-300 flex gap-1.5">
+                            <span className="text-amber-400">•</span> {r}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {activeSignal.wait_levels && (
+                    <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-3">
+                      <p className="text-xs font-bold text-slate-400 uppercase mb-2">Wait For These Levels</p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <p className="text-[10px] text-slate-500 mb-0.5">BUY CALL Trigger</p>
+                          <p className="text-sm font-extrabold text-emerald-400">
+                            Spot &gt; ₹{activeSignal.wait_levels.upper_trigger?.toLocaleString('en-IN')}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-slate-500 mb-0.5">BUY PUT Trigger</p>
+                          <p className="text-sm font-extrabold text-red-400">
+                            Spot &lt; ₹{activeSignal.wait_levels.lower_trigger?.toLocaleString('en-IN')}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeSignal && activeSignal.signal !== 'NO TRADE' && (
                 <div className="bg-slate-950/80 border border-slate-800 p-5 rounded-2xl mt-4">
                   <div className="flex justify-between items-start mb-4">
                     <div>
@@ -410,9 +510,23 @@ const openPositionsList = paperPositions.filter(p => p.status === 'OPEN');
                         </button>
                       ))}
                     </div>
-                    <button onClick={handleExecutePaperTrade} disabled={placingPaperTrade} className="w-full sm:w-auto bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 font-extrabold px-6 py-2.5 rounded-xl text-xs flex items-center justify-center gap-2">
-                      <Wallet className="w-4 h-4" /> {placingPaperTrade ? 'Executing...' : 'EXECUTE PAPER TRADE'}
-                    </button>
+                    {(() => {
+                      const isExecutedForThisSignal = executedTradeSignalId === activeSignal._id;
+                      return (
+                        <button
+                          onClick={handleExecutePaperTrade}
+                          disabled={placingPaperTrade || isExecutedForThisSignal}
+                          className={`w-full sm:w-auto font-extrabold px-6 py-2.5 rounded-xl text-xs flex items-center justify-center gap-2 transition-all ${
+                            isExecutedForThisSignal
+                              ? 'bg-slate-700 text-slate-300 cursor-not-allowed'
+                              : 'bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950'
+                          }`}
+                        >
+                          <Wallet className="w-4 h-4" />
+                          {isExecutedForThisSignal ? '✅ EXECUTED' : placingPaperTrade ? 'Executing...' : 'EXECUTE PAPER TRADE'}
+                        </button>
+                      );
+                    })()}
                   </div>
                 </div>
               )}

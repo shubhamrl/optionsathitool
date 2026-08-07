@@ -22,16 +22,19 @@ class DynamicRiskManager:
         entry_premium: float,
         spot_atr: float,
         delta: float,
-        is_forced_scalp: bool = False
+        is_forced_scalp: bool = False,
+        iv: float = 13.5
     ) -> Dict[str, Any]:
         """
-        Calculates StopLoss, Target 1 (1:1.6 RR), and Target 2 (1:2.8 RR) for an option contract.
-        
+        Calculates StopLoss, Target 1, and Target 2 for an option contract.
+
         :param index_name: NIFTY, BANKNIFTY, SENSEX, FINNIFTY
         :param entry_premium: Real LTP option entry price
         :param spot_atr: Spot Index ATR / Volatility points
         :param delta: Calculated Option Delta (0.1 to 0.9)
-        :param is_forced_scalp: If true, applies tight scalp risk parameters
+        :param is_forced_scalp: If true, applies dynamic tight scalp risk parameters
+        :param iv: Live ATM Implied Volatility of the selected option (used to scale
+                    Forced Scalp SL/Target dynamically with current volatility)
         :return: Dict containing entry, stop_loss, target1, target2, risk_points, and risk_reward_ratio
         """
         if entry_premium <= 0:
@@ -54,10 +57,17 @@ class DynamicRiskManager:
         spot_risk_points = effective_atr * 0.8
 
         if is_forced_scalp:
-            # Scalp Mode: Tight SL bounds for quick entries
-            premium_risk_points = clamp(8.0 * abs_delta + 2.0, min_sl, max_sl * 0.7)
-            t1_multiplier = 1.5
-            t2_multiplier = 2.5
+            # 🎯 Smart Forced Scalp: Dynamic Micro-Risk instead of fixed 8/12 points.
+            # SL/Target now scale with live Delta, Spot ATR, AND ATM IV — higher volatility
+            # widens the SL/Target band, calmer markets tighten it. Baseline IV ~13.5.
+            iv_factor = clamp(iv / 13.5, 0.75, 1.4)
+
+            base_risk = (effective_atr * 0.9 * abs_delta) + 3.0
+            premium_risk_points = clamp(base_risk * iv_factor, min_sl * 0.5, max_sl * 0.75)
+
+            # RR band also flexes slightly with volatility — bigger IV allows a bit more room to target
+            t1_multiplier = round(clamp(1.9 + (iv_factor - 1.0) * 0.3, 1.6, 2.2), 2)
+            t2_multiplier = round(clamp(2.4 + (iv_factor - 1.0) * 0.5, 2.0, 3.0), 2)
         else:
             # Standard Confluence Signal (6.0+ Score): Optimal RR
             premium_risk_points = clamp(spot_risk_points * abs_delta + 2.0, min_sl, max_sl)

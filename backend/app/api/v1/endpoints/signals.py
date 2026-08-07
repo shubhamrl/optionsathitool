@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.api.deps import get_current_user  # JWT Protect Middleware Dependency
 from app.core.database import get_database  # Async Motor MongoDB instance
-from app.engine.ai_surveillance import AISurveillanceEngine
+from app.engine.ai_surveillance import AISurveillanceEngine, get_oi_support_resistance
 from app.engine.risk_manager import risk_manager
 from app.engine.confluence_math import calculate_pcr_and_sentiment, calculate_option_greeks
 from app.services.dhan_websocket import (
@@ -125,7 +125,8 @@ async def decode_market_signal(
                 "regime": ai_result["sentiment"],
                 "signal": "NO TRADE",
                 "score": ai_result["ai_score"],
-                "reasons": ai_result["reasons"]
+                "reasons": ai_result["reasons"],
+                "wait_levels": ai_result.get("wait_levels")
             }
         }
 
@@ -243,10 +244,21 @@ async def decode_force_scalp(
         # 2. PCR & Trend Bias for Forced Scalp High Probability
         pcr, sentiment = calculate_pcr_and_sentiment(oc)
 
-        # Determine Direction even in tight range
-        selected_type = "CE" if pcr >= 0.95 else "PE"
-        signal = "BUY CALL" if selected_type == "CE" else "BUY PUT"
+        # 🎯 Momentum + OI-wall bias: combine PCR bias with where spot sits relative to the
+        # nearest OI resistance/support walls, so Forced Scalp doesn't blindly follow PCR alone.
+        resistance_strike, support_strike = get_oi_support_resistance(oc)
+        if resistance_strike and support_strike:
+            oi_mid_level = (resistance_strike + support_strike) / 2
+            momentum_bias = "CE" if spot > oi_mid_level else "PE"
+        else:
+            momentum_bias = "CE" if pcr >= 1.0 else "PE"
 
+        pcr_bias = "CE" if pcr >= 0.95 else "PE"
+
+        # High confluence: PCR bias and momentum bias agree -> trust it fully.
+        # On disagreement, fall back to PCR bias (safer default) for direction.
+        selected_type = momentum_bias if momentum_bias == pcr_bias else pcr_bias
+        signal = "BUY CALL" if selected_type == "CE" else "BUY PUT"
         # 3. Find Matching Option Node Safely
         atm_node = None
         for key in oc.keys():
@@ -275,14 +287,17 @@ async def decode_force_scalp(
         if entry_price <= 0 or not security_id:
             return {"success": False, "message": "Real LTP unavailable for option contract."}
 
-        # 4. High-Probability Tight Risk Management (Force Mode Math)
-        # Delta defaults to ITM/ATM 0.50 with Tight Micro SL
+        # 4. High-Probability Dynamic Risk Management (Force Mode Math)
+        # IV pulled from the live option node — risk_manager scales SL/Target with it.
+        iv = float(selected_node.get("implied_volatility") or 13.5)
+
         risk_result = risk_manager.calculate_trade_targets(
             index_name=index_name,
             entry_premium=entry_price,
             spot_atr=10.0,
             delta=0.52,
-            is_forced_scalp=True
+            is_forced_scalp=True,
+            iv=iv
         )
 
         signal_doc = {
