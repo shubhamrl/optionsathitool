@@ -54,7 +54,17 @@ async def place_paper_trade(
     entry_price = float(trade_data.get("entry_price", 0.0))
     stop_loss = float(trade_data.get("stop_loss", 0.0))
     target1 = float(trade_data.get("target1", 0.0))
-    
+
+    # Required for live LTP streaming + auto SL/Target square-off linking
+    security_id = str(trade_data.get("security_id", "")).strip()
+    signal_id = trade_data.get("signal_id")
+
+    if not security_id:
+        raise HTTPException(
+            status_code=400,
+            detail="security_id is required to place a paper trade (needed for live LTP tracking)."
+        )
+
     lots = int(trade_data.get("lots", 1))
     lot_size = LOT_SIZES.get(index_name, 25)
     quantity = lots * lot_size
@@ -66,7 +76,7 @@ async def place_paper_trade(
 
     if current_balance < required_margin:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Insufficient Virtual Balance! Required: ₹{required_margin:.2f}, Available: ₹{current_balance:.2f}"
         )
 
@@ -82,6 +92,8 @@ async def place_paper_trade(
         "index_name": index_name,
         "signal": signal_type,
         "strike": strike,
+        "security_id": security_id,
+        "signal_id": str(signal_id) if signal_id else None,
         "buy_price": entry_price,
         "sell_price": 0.0,
         "quantity": quantity,
@@ -96,9 +108,15 @@ async def place_paper_trade(
     result = await db.paper_trades.insert_one(paper_trade)
     paper_trade["_id"] = str(result.inserted_id)
 
+    # Link this trade into the active SL/Target monitoring tracker so
+    # dhan_websocket.py can auto square-off this exact trade on hit.
+    if signal_id:
+        from app.services.dhan_websocket import link_paper_trade_to_position
+        link_paper_trade_to_position(security_id, signal_id, str(result.inserted_id))
+
     return {
-        "success": True, 
-        "message": "Virtual Paper Trade Executed!", 
+        "success": True,
+        "message": "Virtual Paper Trade Executed!",
         "trade": paper_trade,
         "remaining_balance": new_balance
     }
@@ -113,10 +131,9 @@ async def get_paper_positions(
     db=Depends(get_database)
 ):
     user_id = str(current_user["_id"])
-    
-    # MongoDB Query
+
     cursor = db.paper_trades.find({"user_id": user_id}).sort("created_at", -1)
-    
+
     positions = []
     async for doc in cursor:
         positions.append({
@@ -125,6 +142,8 @@ async def get_paper_positions(
             "index_name": doc.get("index_name", "NIFTY"),
             "signal": doc.get("signal", "BUY CALL"),
             "strike": doc.get("strike", ""),
+            "security_id": doc.get("security_id", ""),
+            "signal_id": doc.get("signal_id", ""),
             "buy_price": float(doc.get("buy_price", 0.0)),
             "sell_price": float(doc.get("sell_price", 0.0)),
             "quantity": int(doc.get("quantity", 0)),
@@ -138,8 +157,9 @@ async def get_paper_positions(
         })
 
     return {"success": True, "positions": positions}
-        
-        # ----------------------------------------------------------------------------
+
+
+# ----------------------------------------------------------------------------
 # 4. POST /api/v1/paper/square-off/{trade_id} - Close Paper Position
 # ----------------------------------------------------------------------------
 @router.post("/square-off/{trade_id}")
@@ -197,8 +217,9 @@ async def square_off_paper_trade(
     )
 
     return {"success": True, "message": "Position Squared Off!", "net_pnl": net_pnl}
-  
-  # ----------------------------------------------------------------------------
+
+
+# ----------------------------------------------------------------------------
 # 5. POST /api/v1/paper/square-off-all - Close All Open Paper Positions
 # ----------------------------------------------------------------------------
 @router.post("/square-off-all")
@@ -232,7 +253,7 @@ async def square_off_all_paper_trades(
         buy_price = trade["buy_price"]
         quantity = trade["quantity"]
         margin_used = trade["margin_used"]
-        
+
         # Get live LTP from map, fallback to buy_price
         exit_price = float(prices_map.get(trade_id, buy_price))
         if exit_price <= 0:
@@ -279,5 +300,3 @@ async def square_off_all_paper_trades(
         "closed_count": closed_count,
         "total_net_pnl": round(total_net_pnl, 2)
     }
-
-    return {"success": True, "positions": positions}

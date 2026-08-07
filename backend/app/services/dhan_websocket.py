@@ -3,6 +3,7 @@ import json
 import logging
 import struct
 import websockets
+from datetime import datetime
 from typing import Dict, Any, List, Set, Optional
 
 from app.core.config import settings
@@ -83,7 +84,7 @@ class DhanWebSocketClient:
             {"ExchangeSegment": "IDX_I", "SecurityId": "13"},   # NIFTY
             {"ExchangeSegment": "IDX_I", "SecurityId": "25"},   # BANKNIFTY
             {"ExchangeSegment": "IDX_I", "SecurityId": "27"},   # FINNIFTY
-            {"ExchangeSegment": "BSE_FNO", "SecurityId": "51"} # SENSEX
+            {"ExchangeSegment": "BSE_FNO", "SecurityId": "51"}  # SENSEX
         ]
         payload = {
             "RequestCode": 15,
@@ -144,7 +145,8 @@ class DhanWebSocketClient:
             target = pos.get("target", 0.0)
             sl = pos.get("sl", 0.0)
             signal_id = pos.get("signal_id")
-            
+            trade_id = pos.get("trade_id")
+
             status_update = None
             if target > 0 and current_ltp >= target:
                 status_update = "TARGET_HIT"
@@ -152,16 +154,24 @@ class DhanWebSocketClient:
                 status_update = "SL_HIT"
 
             if status_update:
-                logger.info(f"🎯 [TRADE CLOSED] Signal: {signal_id} | Status: {status_update} @ ₹{current_ltp}")
-                # Update status in MongoDB
+                logger.info(f"🎯 [SIGNAL CLOSED] Signal: {signal_id} | Status: {status_update} @ ₹{current_ltp}")
                 try:
                     from app.core.database import get_database
                     from bson import ObjectId
                     db = await get_database()
+
+                    # 1) Update the signal status
                     await db.signals.update_one(
                         {"_id": ObjectId(signal_id)},
                         {"$set": {"status": status_update, "exit_ltp": current_ltp}}
                     )
+
+                    # 2) Auto square-off the linked paper trade (if one was executed)
+                    if trade_id:
+                        await self._auto_square_off_paper_trade(
+                            db, trade_id, current_ltp, status_update, broadcast_callback
+                        )
+
                 except Exception as e:
                     logger.error(f"Error updating DB status: {str(e)}")
 
@@ -180,13 +190,76 @@ class DhanWebSocketClient:
         else:
             active_positions_tracker.pop(sec_id, None)
 
+    async def _auto_square_off_paper_trade(self, db, trade_id: str, exit_ltp: float, exit_reason: str, broadcast_callback=None):
+        """SL/Target hit hone par linked OPEN paper_trades record ko auto square-off karta hai,
+        margin refund + net PnL wallet me credit/debit karta hai."""
+        from bson import ObjectId
+        from app.models.paper_trading import calculate_indian_option_charges
+
+        trade = await db.paper_trades.find_one({"_id": ObjectId(trade_id)})
+        if not trade or trade.get("status") != "OPEN":
+            return  # Already manually closed, ya trade exist nahi karta
+
+        user_id = trade["user_id"]
+        buy_price = trade["buy_price"]
+        quantity = trade["quantity"]
+        margin_used = trade["margin_used"]
+
+        charges = calculate_indian_option_charges(buy_price, exit_ltp, quantity)
+        net_pnl = charges["net_pnl"]
+        total_taxes = charges["total_taxes"]
+
+        wallet = await db.paper_wallets.find_one({"user_id": user_id})
+        current_balance = wallet.get("balance", 0.0) if wallet else 0.0
+        current_realized_pnl = wallet.get("realized_pnl", 0.0) if wallet else 0.0
+        current_taxes = wallet.get("total_taxes_paid", 0.0) if wallet else 0.0
+
+        updated_balance = current_balance + margin_used + net_pnl
+        updated_realized_pnl = current_realized_pnl + net_pnl
+        updated_taxes = current_taxes + total_taxes
+
+        await db.paper_wallets.update_one(
+            {"user_id": user_id},
+            {"$set": {
+                "balance": round(updated_balance, 2),
+                "realized_pnl": round(updated_realized_pnl, 2),
+                "total_taxes_paid": round(updated_taxes, 2)
+            }}
+        )
+
+        await db.paper_trades.update_one(
+            {"_id": ObjectId(trade_id)},
+            {"$set": {
+                "status": "SQUARED_OFF",
+                "sell_price": exit_ltp,
+                "net_pnl": net_pnl,
+                "charges": charges,
+                "exit_reason": exit_reason,
+                "closed_at": datetime.utcnow()
+            }}
+        )
+
+        logger.info(f"💰 [AUTO SQUARE-OFF] Trade: {trade_id} | Reason: {exit_reason} | Net PnL: ₹{net_pnl:.2f}")
+
+        if broadcast_callback:
+            await broadcast_callback({
+                "type": "PAPER_TRADE_AUTO_CLOSED",
+                "trade_id": trade_id,
+                "status": "SQUARED_OFF",
+                "exit_price": exit_ltp,
+                "exit_reason": exit_reason,
+                "net_pnl": net_pnl
+            })
+
 
 dhan_ws_client = DhanWebSocketClient()
+
 
 def register_token_index_mapping(token_map: Dict[str, str]):
     security_id_to_index_map.update(token_map)
 
-def track_active_position_trade(security_id: str, signal_id: str, target: float, sl: float):
+
+def track_active_position_trade(security_id: str, signal_id: str, target: float, sl: float, trade_id: Optional[str] = None):
     sec_id_str = str(security_id)
     if sec_id_str not in active_positions_tracker:
         active_positions_tracker[sec_id_str] = []
@@ -194,8 +267,31 @@ def track_active_position_trade(security_id: str, signal_id: str, target: float,
     active_positions_tracker[sec_id_str].append({
         "signal_id": str(signal_id),
         "target": float(target),
-        "sl": float(sl)
+        "sl": float(sl),
+        "trade_id": str(trade_id) if trade_id else None
     })
-    
+
+    if sec_id_str not in subscribed_security_ids:
+        asyncio.create_task(dhan_ws_client.subscribe_symbols([sec_id_str]))
+
+
+def link_paper_trade_to_position(security_id: str, signal_id: str, trade_id: str):
+    """Paper trade place hone ke baad, us signal ke liye pehle se tracked
+    active_positions_tracker entry me trade_id attach karta hai — taaki
+    SL/Target hit hone par yehi paper trade auto square-off ho sake."""
+    sec_id_str = str(security_id)
+    positions = active_positions_tracker.get(sec_id_str, [])
+    found = False
+    for pos in positions:
+        if pos.get("signal_id") == str(signal_id):
+            pos["trade_id"] = str(trade_id)
+            found = True
+
+    if not found:
+        logger.warning(
+            f"⚠️ link_paper_trade_to_position: signal {signal_id} security {sec_id_str} par "
+            f"tracked nahi mila. Trade {trade_id} SL/Target par auto-close NAHI hoga."
+        )
+
     if sec_id_str not in subscribed_security_ids:
         asyncio.create_task(dhan_ws_client.subscribe_symbols([sec_id_str]))
