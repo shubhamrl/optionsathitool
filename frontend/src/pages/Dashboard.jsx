@@ -25,12 +25,16 @@ export default function Dashboard() {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
 
   // Paper Trading States
-  const [paperWallet, setPaperWallet] = useState({ balance: 100000, realized_pnl: 0, total_taxes_paid: 0 });
+   const [paperWallet, setPaperWallet] = useState({ balance: 100000, realized_pnl: 0, total_taxes_paid: 0 });
   const [paperPositions, setPaperPositions] = useState([]);
   const [paperLots, setPaperLots] = useState(1);
   const [placingPaperTrade, setPlacingPaperTrade] = useState(false);
   const [exitingAll, setExitingAll] = useState(false);
 
+  // 🔴 REAL live LTP per security_id — populated ONLY from backend WebSocket ticks.
+  // Koi simulated/derived formula nahi — agar tick nahi aaya, to buy_price fallback dikhta hai
+  // (isLive flag se UI me clearly distinguish hota hai).
+  const [optionLtpStore, setOptionLtpStore] = useState({});
   // Admin States
   const [adminStats, setAdminStats] = useState({ total_users: 0, total_trades: 0, target_hits: 0, sl_hits: 0 });
   const [usersList, setUsersList] = useState([]);
@@ -38,6 +42,7 @@ export default function Dashboard() {
   const [adminUserTrades, setAdminUserTrades] = useState([]);
 
   const wsRef = useRef(null);
+  const wsRefs = useRef({}); // { INDEX_NAME: WebSocket } — open positions kai indices me ho sakti hain
 
   const fetchSignalsLog = async () => {
     try {
@@ -75,38 +80,100 @@ export default function Dashboard() {
     } catch (e) {}
   };
 
-  const connectWebSocket = (indexName) => {
-    if (wsRef.current) wsRef.current.close();
+  const connectIndexWebSocket = (indexName) => {
+    if (wsRefs.current[indexName]) return; // already connected to this index
+
     const wsUrl = `${WS_BASE_URL}/api/v1/market/ws/${indexName}`;
     const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    wsRefs.current[indexName] = ws;
 
-    ws.onopen = () => setWsConnected(true);
+    ws.onopen = () => {
+      if (indexName === selectedIndex) setWsConnected(true);
+    };
+
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
+
         if (message.type === 'TICKER_STREAM') {
           const indexStore = message.data || {};
-          if (indexStore.spot && indexStore.spot > 0) setLiveSpot(indexStore.spot);
-        } else if (message.type === 'SIGNAL_STATUS_UPDATE') {
+
+          // Sirf currently selected tab ke summary cards update karo
+          if (indexName === selectedIndex) {
+            if (indexStore.spot && indexStore.spot > 0) setLiveSpot(indexStore.spot);
+            if (typeof indexStore.pcr === 'number') setPcr(indexStore.pcr);
+            if (indexStore.trend) setRegime(indexStore.trend);
+          }
+
+          // 🎯 REAL per-contract LTP ticks nikalo — koi formula nahi, direct backend tick.
+          // market_data_store me spot/pcr/trend ke alawa har entry ek {security_id: {ltp: ...}} object hai.
+          const tickUpdates = {};
+          Object.entries(indexStore).forEach(([key, val]) => {
+            if (val && typeof val === 'object' && typeof val.ltp === 'number') {
+              tickUpdates[key] = val.ltp;
+            }
+          });
+          if (Object.keys(tickUpdates).length > 0) {
+            setOptionLtpStore(prev => ({ ...prev, ...tickUpdates }));
+          }
+        } else if (message.type === 'SIGNAL_STATUS_UPDATE' || message.type === 'PAPER_TRADE_AUTO_CLOSED') {
+          // Auto SL/Target exit hone par turant refresh (backend se broadcast aata hai)
           fetchSignalsLog();
           fetchPaperData();
           if (user?.role === 'admin') fetchAdminData();
         }
       } catch (e) {}
     };
-    ws.onclose = () => setWsConnected(false);
+
+    ws.onclose = () => {
+      delete wsRefs.current[indexName];
+      if (indexName === selectedIndex) setWsConnected(false);
+    };
   };
 
+  const disconnectIndexWebSocket = (indexName) => {
+    const ws = wsRefs.current[indexName];
+    if (ws) {
+      ws.close();
+      delete wsRefs.current[indexName];
+    }
+  };
+
+  // Initial data load jab index tab badle ya user login kare
   useEffect(() => {
     if (user) {
-      connectWebSocket(selectedIndex);
       fetchSignalsLog();
       fetchPaperData();
       if (user.role === 'admin') fetchAdminData();
     }
-    return () => { if (wsRef.current) wsRef.current.close(); };
   }, [selectedIndex, user]);
+
+  // 🔌 WebSocket connections manage karo: selected tab + har OPEN position ka index
+  useEffect(() => {
+    if (!user) return;
+
+    const requiredIndices = new Set([selectedIndex]);
+    paperPositions
+      .filter(p => p.status === 'OPEN')
+      .forEach(p => requiredIndices.add(p.index_name));
+
+    requiredIndices.forEach(idx => {
+      if (!wsRefs.current[idx]) connectIndexWebSocket(idx);
+    });
+
+    // Jo index ab kisi open position ya selected tab me nahi hai, uska connection band karo
+    Object.keys(wsRefs.current).forEach(idx => {
+      if (!requiredIndices.has(idx)) disconnectIndexWebSocket(idx);
+    });
+  }, [selectedIndex, user, paperPositions]);
+
+  // Unmount par saare WS connections cleanup karo
+  useEffect(() => {
+    return () => {
+      Object.values(wsRefs.current).forEach(ws => ws.close());
+      wsRefs.current = {};
+    };
+  }, []);
 
   const handleDecodeSignal = async (isForce = false) => {
     setLoadingDecode(true);
@@ -124,10 +191,12 @@ export default function Dashboard() {
     if (!activeSignal) return;
     setPlacingPaperTrade(true);
     try {
-      const res = await axios.post(`${API_BASE_URL}/paper/place-trade`, {
+            const res = await axios.post(`${API_BASE_URL}/paper/place-trade`, {
         index_name: selectedIndex,
         signal: activeSignal.signal,
         strike: activeSignal.strike,
+        security_id: activeSignal.security_id,
+        signal_id: activeSignal._id,
         entry_price: activeSignal.entry_price,
         stop_loss: activeSignal.stop_loss,
         target1: activeSignal.shz_upper,
@@ -189,13 +258,18 @@ const openPositionsList = paperPositions.filter(p => p.status === 'OPEN');
 
   const getLivePositionMetrics = (p) => {
     if (p.status !== 'OPEN') {
-      return { currentLtp: p.sell_price || p.buy_price, pnl: p.net_pnl || 0 };
+      return { currentLtp: p.sell_price || p.buy_price, pnl: p.net_pnl || 0, isLive: false };
     }
-    const simulatedLtp = +(p.buy_price * (1 + (liveSpot > 0 ? ((liveSpot % 10) - 5) / 500 : 0))).toFixed(2);
-    const grossPnl = +((simulatedLtp - p.buy_price) * p.quantity).toFixed(2);
-    return { currentLtp: simulatedLtp, pnl: grossPnl };
-  };
 
+    // ✅ REAL live LTP — backend WebSocket tick se, security_id ke through match kiya gaya.
+    // Koi simulated/derived price formula nahi.
+    const liveLtp = optionLtpStore[p.security_id];
+    const hasLiveTick = typeof liveLtp === 'number' && liveLtp > 0;
+    const currentLtp = hasLiveTick ? liveLtp : p.buy_price;
+    const grossPnl = +((currentLtp - p.buy_price) * p.quantity).toFixed(2);
+
+    return { currentLtp, pnl: grossPnl, isLive: hasLiveTick };
+  };
   const totalUnrealizedPnl = paperPositions
     .filter(p => p.status === 'OPEN')
     .reduce((acc, p) => acc + getLivePositionMetrics(p).pnl, 0);
@@ -456,14 +530,19 @@ const openPositionsList = paperPositions.filter(p => p.status === 'OPEN');
                   <tbody>
                     {paperPositions.length > 0 ? (
                       paperPositions.map((p, idx) => {
-                        const { currentLtp, pnl } = getLivePositionMetrics(p);
+                        const { currentLtp, pnl, isLive } = getLivePositionMetrics(p);
                         return (
                           <tr key={p._id || idx} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                             <td className="p-3 font-semibold">{p.index_name}</td>
                             <td className="p-3 font-medium">{p.strike}</td>
                             <td className="p-3 text-slate-400">{p.quantity} ({p.lots} L)</td>
                             <td className="p-3 font-semibold text-cyan-400">₹{p.buy_price}</td>
-                            <td className="p-3 font-bold text-slate-100 animate-pulse">₹{currentLtp}</td>
+                            <td className={`p-3 font-bold ${isLive ? 'text-slate-100 animate-pulse' : 'text-slate-500'}`}>
+                              ₹{currentLtp}
+                              {p.status === 'OPEN' && !isLive && (
+                                <span className="text-[9px] ml-1 text-slate-600">(syncing...)</span>
+                              )}
+                            </td>
                             <td className={`p-3 font-extrabold ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                               {pnl >= 0 ? `+₹${pnl}` : `-₹${Math.abs(pnl)}`}
                             </td>

@@ -42,7 +42,7 @@ async def get_or_fetch_expiry(index_name: str) -> Optional[str]:
 
     idx_config = settings.INDICES_CONFIG.get(index_name.upper(), settings.INDICES_CONFIG["NIFTY"])
     expiries = await fetch_expiry_list(idx_config["scrip_id"], idx_config["underlying_seg"])
-    
+
     if expiries:
         expiry_cache[index_name] = {"expiry": expiries[0], "fetched_at": now_ts}
         return expiries[0]
@@ -192,7 +192,8 @@ async def decode_market_signal(
     if not existing:
         res = await db.signals.insert_one(signal_doc)
         signal_id = str(res.inserted_id)
-        
+        signal_doc["_id"] = signal_id
+
         # 🟢 Register active position for real-time WebSocket SL/Target exit monitoring
         track_active_position_trade(
             security_id=security_id,
@@ -200,11 +201,13 @@ async def decode_market_signal(
             target=risk_result["target1"],
             sl=risk_result["stop_loss"]
         )
+    else:
+        # Cooling-window par existing signal mila — usi ka _id return karo
+        signal_doc["_id"] = str(existing["_id"])
 
     return {"success": True, "data": signal_doc}
 
 
-# ----------------------------------------------------------------------------
 # ----------------------------------------------------------------------------
 # 2. POST /api/v1/signals/decode-force (Forced Scalp Engine - Crash Proof)
 # ----------------------------------------------------------------------------
@@ -223,7 +226,7 @@ async def decode_force_scalp(
             return {"success": False, "message": f"No active expiry found for {index_name}"}
 
         raw_oc = await fetch_full_option_chain_data(idx_config["scrip_id"], idx_config["underlying_seg"], expiry)
-        
+
         if not raw_oc:
             return {"success": False, "message": "Option chain data currently unavailable from Dhan."}
 
@@ -239,7 +242,7 @@ async def decode_force_scalp(
 
         # 2. PCR & Trend Bias for Forced Scalp High Probability
         pcr, sentiment = calculate_pcr_and_sentiment(oc)
-        
+
         # Determine Direction even in tight range
         selected_type = "CE" if pcr >= 0.95 else "PE"
         signal = "BUY CALL" if selected_type == "CE" else "BUY PUT"
@@ -262,7 +265,7 @@ async def decode_force_scalp(
             return {"success": False, "message": f"Could not map ATM strike {atm_strike}."}
 
         selected_node = atm_node.get("ce") if selected_type == "CE" else atm_node.get("pe")
-        
+
         if not selected_node:
             return {"success": False, "message": "Selected option contract node unavailable."}
 
@@ -327,7 +330,7 @@ async def decode_force_scalp(
     except Exception as e:
         logger.error(f"❌ Error in /decode-force: {str(e)}", exc_info=True)
         return {
-            "success": False, 
+            "success": False,
             "message": f"Engine execution issue: {str(e)}"
         }
 
@@ -342,7 +345,7 @@ async def get_signals_log(
     db=Depends(get_database)
 ):
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    
+
     cursor = db.signals.find({
         "user_id": str(current_user["_id"]),
         "created_at": {"$gte": today_start}
@@ -398,8 +401,10 @@ async def batch_live_ltp_update(
                     {"_id": sig["_id"], "status": "ACTIVE"},
                     {"$set": {"status": updated_status, "exit_ltp": live_price, "updated_at": datetime.utcnow()}}
                 )
-                
-                # ----------------------------------------------------------------------------
+
+    return {"success": True, "prices": prices}
+
+
 # ----------------------------------------------------------------------------
 # 5. GET /api/v1/signals/admin/today-stats
 # ----------------------------------------------------------------------------
@@ -409,7 +414,7 @@ async def get_admin_today_stats(
     db=Depends(get_database)
 ):
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    
+
     total_users = await db.users.count_documents({})
     total_trades = await db.signals.count_documents({"created_at": {"$gte": today_start}})
     target_hits = await db.signals.count_documents({"created_at": {"$gte": today_start}, "status": "TARGET_HIT"})
@@ -436,7 +441,7 @@ async def get_admin_user_trades(
     db=Depends(get_database)
 ):
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    
+
     cursor = db.signals.find({
         "user_id": target_user_id,
         "created_at": {"$gte": today_start}
@@ -448,4 +453,3 @@ async def get_admin_user_trades(
         trades.append(doc)
 
     return {"success": True, "count": len(trades), "trades": trades}
-    return {"success": True, "prices": prices}
