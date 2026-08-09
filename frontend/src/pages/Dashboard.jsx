@@ -55,9 +55,18 @@ export default function Dashboard() {
   const [selectedAdminUser, setSelectedAdminUser] = useState(null);
   const [adminUserTrades, setAdminUserTrades] = useState([]);
 
-  const wsRef = useRef(null);
+   const wsRef = useRef(null);
   const wsRefs = useRef({}); // { INDEX_NAME: WebSocket } — open positions kai indices me ho sakti hain
+  const selectedIndexRef = useRef(selectedIndex); // WebSocket closures ke liye hamesha latest selectedIndex
 
+    useEffect(() => {
+    selectedIndexRef.current = selectedIndex;
+    // Tab switch karte hi, agar us index ka spot pehle se ticker-strip me available hai,
+    // to naye tick ka wait kiye bina turant SPOT card update kar do (better UX).
+    if (indicesLiveData[selectedIndex] > 0) {
+      setLiveSpot(indicesLiveData[selectedIndex]);
+    }
+  }, [selectedIndex]);
   const fetchSignalsLog = async () => {
     try {
       const res = await axios.get(`${API_BASE_URL}/signals/automated-signals-log`);
@@ -121,7 +130,7 @@ const fetchAdminData = async () => {
     wsRefs.current[indexName] = ws;
 
     ws.onopen = () => {
-      if (indexName === selectedIndex) setWsConnected(true);
+      if (indexName === selectedIndexRef.current) setWsConnected(true);
     };
 
     ws.onmessage = (event) => {
@@ -136,8 +145,9 @@ const fetchAdminData = async () => {
             setIndicesLiveData(prev => ({ ...prev, [indexName]: indexStore.spot }));
           }
 
-          // Sirf currently selected index ke summary cards (SPOT/PCR/REGIME) update karo
-          if (indexName === selectedIndex) {
+          // Sirf currently selected index ke summary cards (SPOT/PCR/REGIME) update karo —
+          // selectedIndexRef.current use karo, closure-captured selectedIndex nahi (stale-closure fix)
+          if (indexName === selectedIndexRef.current) {
             if (indexStore.spot && indexStore.spot > 0) setLiveSpot(indexStore.spot);
             if (typeof indexStore.pcr === 'number') setPcr(indexStore.pcr);
             if (indexStore.trend) setRegime(indexStore.trend);
@@ -163,9 +173,9 @@ const fetchAdminData = async () => {
       } catch (e) {}
     };
 
-    ws.onclose = () => {
+      ws.onclose = () => {
       delete wsRefs.current[indexName];
-      if (indexName === selectedIndex) setWsConnected(false);
+      if (indexName === selectedIndexRef.current) setWsConnected(false);
     };
   };
 
