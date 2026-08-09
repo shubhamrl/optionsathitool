@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from app.core.config import settings
-from app.api.deps import get_current_user  # JWT Protect Middleware Dependency
-from app.core.database import get_database  # Async Motor MongoDB instance
+from app.api.deps import get_current_user
+from app.core.database import get_database
 from app.engine.ai_surveillance import AISurveillanceEngine, get_oi_support_resistance
 from app.engine.risk_manager import risk_manager
 from app.engine.confluence_math import calculate_pcr_and_sentiment, calculate_option_greeks
@@ -20,7 +20,6 @@ from app.services.token_registry import fetch_expiry_list, fetch_full_option_cha
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Cache for Expiries per index
 expiry_cache: Dict[str, Dict[str, Any]] = {}
 
 
@@ -32,9 +31,6 @@ class BatchLTPRequest(BaseModel):
     security_ids: List[str]
 
 
-# ----------------------------------------------------------------------------
-# HELPER: Get active weekly expiry for target index
-# ----------------------------------------------------------------------------
 async def get_or_fetch_expiry(index_name: str) -> Optional[str]:
     now_ts = datetime.utcnow().timestamp()
     if index_name in expiry_cache and (now_ts - expiry_cache[index_name]["fetched_at"]) < 3600:
@@ -49,10 +45,6 @@ async def get_or_fetch_expiry(index_name: str) -> Optional[str]:
     return None
 
 
-# ----------------------------------------------------------------------------
-# 1. POST /api/v1/signals/decode
-# Unified Multi-Index AI Confluence Signal Generator
-# ----------------------------------------------------------------------------
 @router.post("/decode")
 async def decode_market_signal(
     payload: DecodeRequest,
@@ -66,7 +58,6 @@ async def decode_market_signal(
     if not expiry:
         return {"success": False, "message": f"No active expiry found for {index_name}"}
 
-    # 1. Fetch Option Chain Data (Central Backend Call - ZERO Client Leakage)
     raw_oc = await fetch_full_option_chain_data(
         scrip_id=idx_config["scrip_id"],
         segment=idx_config["underlying_seg"],
@@ -82,11 +73,9 @@ async def decode_market_signal(
     if spot <= 0 or not oc:
         return {"success": False, "message": "Incomplete option chain data received from Dhan."}
 
-    # 2. ATM Strike Calculation
     step = idx_config["step_size"]
     atm_strike = int(round(spot / step) * step)
 
-    # Decimal key matcher helper
     atm_node = None
     for key in oc.keys():
         try:
@@ -99,13 +88,12 @@ async def decode_market_signal(
     if not atm_node:
         return {"success": False, "message": f"Could not find ATM node for strike {atm_strike}"}
 
-    # 3. AI Confluence Evaluation
     ai_engine = AISurveillanceEngine(index_name)
     ai_result = ai_engine.evaluate_market_state(
         spot=spot,
         atm_strike=atm_strike,
         oc_data=oc,
-        spot_history=[spot],  # Evaluated with rolling memory in pipeline
+        spot_history=[spot],
         orb_high=0.0,
         orb_low=0.0
     )
@@ -130,23 +118,20 @@ async def decode_market_signal(
             }
         }
 
-    # 4. Extract Real LTP and Security ID for Selected Option Contract
     selected_node = atm_node.get("ce") if selected_type == "CE" else atm_node.get("pe")
     entry_price = float(selected_node.get("last_price") or 0.0) if selected_node else 0.0
     security_id = str(selected_node.get("security_id") or "") if selected_node else ""
 
-    # Synthetic Price Guard: Never emit a signal on synthetic/fake price
     if entry_price <= 0 or not security_id:
         return {
             "success": True,
             "data": {
                 "ok": True,
                 "signal": "NO TRADE",
-                "message": "⚠️ Signal suppressed: Real LTP unavailable for this option contract."
+                "message": "Signal suppressed: Real LTP unavailable for this option contract."
             }
         }
 
-    # 5. Calculate Option Greeks & Dynamic Risk Management
     iv = float(selected_node.get("implied_volatility") or 13.5) if selected_node else 13.5
     greeks = calculate_option_greeks(spot, atm_strike, 0.02, iv, option_type=selected_type)
 
@@ -181,7 +166,6 @@ async def decode_market_signal(
         "created_at": datetime.utcnow()
     }
 
-    # Save Signal to MongoDB (With 5-min cooling period check)
     cooling_window = datetime.utcnow() - timedelta(minutes=5)
     existing = await db.signals.find_one({
         "user_id": str(current_user["_id"]),
@@ -195,7 +179,6 @@ async def decode_market_signal(
         signal_id = str(res.inserted_id)
         signal_doc["_id"] = signal_id
 
-        # 🟢 Register active position for real-time WebSocket SL/Target exit monitoring
         track_active_position_trade(
             security_id=security_id,
             signal_id=signal_id,
@@ -203,15 +186,11 @@ async def decode_market_signal(
             sl=risk_result["stop_loss"]
         )
     else:
-        # Cooling-window par existing signal mila — usi ka _id return karo
         signal_doc["_id"] = str(existing["_id"])
 
     return {"success": True, "data": signal_doc}
 
 
-# ----------------------------------------------------------------------------
-# 2. POST /api/v1/signals/decode-force (Forced Scalp Engine - Crash Proof)
-# ----------------------------------------------------------------------------
 @router.post("/decode-force")
 async def decode_force_scalp(
     payload: DecodeRequest,
@@ -237,15 +216,11 @@ async def decode_force_scalp(
         if spot <= 0 or not oc:
             return {"success": False, "message": "Incomplete market data for forced scalp."}
 
-        # 1. Calculate ATM Strike
         step = idx_config["step_size"]
         atm_strike = int(round(spot / step) * step)
 
-        # 2. PCR & Trend Bias for Forced Scalp High Probability
         pcr, sentiment = calculate_pcr_and_sentiment(oc)
 
-        # 🎯 Momentum + OI-wall bias: combine PCR bias with where spot sits relative to the
-        # nearest OI resistance/support walls, so Forced Scalp doesn't blindly follow PCR alone.
         resistance_strike, support_strike = get_oi_support_resistance(oc)
         if resistance_strike and support_strike:
             oi_mid_level = (resistance_strike + support_strike) / 2
@@ -255,11 +230,9 @@ async def decode_force_scalp(
 
         pcr_bias = "CE" if pcr >= 0.95 else "PE"
 
-        # High confluence: PCR bias and momentum bias agree -> trust it fully.
-        # On disagreement, fall back to PCR bias (safer default) for direction.
         selected_type = momentum_bias if momentum_bias == pcr_bias else pcr_bias
         signal = "BUY CALL" if selected_type == "CE" else "BUY PUT"
-        # 3. Find Matching Option Node Safely
+
         atm_node = None
         for key in oc.keys():
             try:
@@ -270,7 +243,6 @@ async def decode_force_scalp(
                 continue
 
         if not atm_node:
-            # Fallback to direct dictionary lookup
             atm_node = oc.get(str(atm_strike)) or oc.get(float(atm_strike))
 
         if not atm_node:
@@ -287,8 +259,6 @@ async def decode_force_scalp(
         if entry_price <= 0 or not security_id:
             return {"success": False, "message": "Real LTP unavailable for option contract."}
 
-        # 4. High-Probability Dynamic Risk Management (Force Mode Math)
-        # IV pulled from the live option node — risk_manager scales SL/Target with it.
         iv = float(selected_node.get("implied_volatility") or 13.5)
 
         risk_result = risk_manager.calculate_trade_targets(
@@ -312,11 +282,11 @@ async def decode_force_scalp(
             "shz_upper": risk_result["target1"],
             "shz_lower": risk_result["stop_loss"],
             "target2": risk_result["target2"],
-            "score": 5.0,  # Scalp Risk Score Flag
+            "score": 5.0,
             "reasons": [
-                f"⚡ HIGH-RISK FORCED SCALP: Triggered by trader override",
-                f"📊 Market Bias: PCR {pcr} ({sentiment})",
-                f"🛡️ Tight Micro StopLoss applied to preserve capital"
+                "HIGH-RISK FORCED SCALP: Triggered by trader override",
+                f"Market Bias: PCR {pcr} ({sentiment})",
+                "Dynamic Micro StopLoss applied based on live Delta/ATR/IV"
             ],
             "pcr": pcr,
             "vix": 13.5,
@@ -327,12 +297,10 @@ async def decode_force_scalp(
             "created_at": datetime.utcnow()
         }
 
-        # Save to Database & Track Trade
         res = await db.signals.insert_one(signal_doc)
         signal_id = str(res.inserted_id)
         signal_doc["_id"] = signal_id
 
-        # Register live WS tracking
         track_active_position_trade(
             security_id=security_id,
             signal_id=signal_id,
@@ -343,17 +311,13 @@ async def decode_force_scalp(
         return {"success": True, "data": signal_doc}
 
     except Exception as e:
-        logger.error(f"❌ Error in /decode-force: {str(e)}", exc_info=True)
+        logger.error(f"Error in /decode-force: {str(e)}", exc_info=True)
         return {
             "success": False,
             "message": f"Engine execution issue: {str(e)}"
         }
 
 
-# ----------------------------------------------------------------------------
-# 3. GET /api/v1/signals/automated-signals-log
-# Retrieves Today's Active Signals for current user
-# ----------------------------------------------------------------------------
 @router.get("/automated-signals-log")
 async def get_signals_log(
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -374,10 +338,6 @@ async def get_signals_log(
     return {"success": True, "count": len(signals), "logs": signals}
 
 
-# ----------------------------------------------------------------------------
-# 4. POST /api/v1/signals/live-ltp-batch
-# Batch Live Price Sync & Target/SL Lock Endpoint
-# ----------------------------------------------------------------------------
 @router.post("/live-ltp-batch")
 async def batch_live_ltp_update(
     payload: BatchLTPRequest,
@@ -388,13 +348,11 @@ async def batch_live_ltp_update(
         return {"success": True, "prices": {}}
 
     prices = {}
-    # Extract live ticks from Python WebSocket in-memory store
     for index_name, store in market_data_store.items():
         for sec_id in clean_ids:
             if sec_id in store and "ltp" in store[sec_id]:
                 prices[sec_id] = store[sec_id]["ltp"]
 
-    # Evaluate DB Active Signal Statuses
     if prices:
         cursor = db.signals.find({"security_id": {"$in": list(prices.keys())}, "status": "ACTIVE"})
         async for sig in cursor:
@@ -420,9 +378,6 @@ async def batch_live_ltp_update(
     return {"success": True, "prices": prices}
 
 
-# ----------------------------------------------------------------------------
-# 5. GET /api/v1/signals/admin/today-stats
-# ----------------------------------------------------------------------------
 @router.get("/admin/today-stats")
 async def get_admin_today_stats(
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -446,9 +401,6 @@ async def get_admin_today_stats(
     }
 
 
-# ----------------------------------------------------------------------------
-# 6. GET /api/v1/signals/admin/user-trades/{target_user_id}
-# ----------------------------------------------------------------------------
 @router.get("/admin/user-trades/{target_user_id}")
 async def get_admin_user_trades(
     target_user_id: str,
@@ -468,3 +420,61 @@ async def get_admin_user_trades(
         trades.append(doc)
 
     return {"success": True, "count": len(trades), "trades": trades}
+
+
+@router.get("/admin/overall-accuracy")
+async def get_overall_accuracy_stats(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    tracking_doc = await db.app_settings.find_one({"_id": "accuracy_tracking"})
+    start_date = tracking_doc.get("start_date") if tracking_doc else None
+
+    date_filter = {"created_at": {"$gte": start_date}} if start_date else {}
+
+    total_target_hit = await db.signals.count_documents({**date_filter, "status": "TARGET_HIT"})
+    total_sl_hit = await db.signals.count_documents({**date_filter, "status": "SL_HIT"})
+    total_active = await db.signals.count_documents({**date_filter, "status": "ACTIVE"})
+    total_expired = await db.signals.count_documents({**date_filter, "status": "EXPIRED"})
+    total_signals_ever = await db.signals.count_documents(date_filter)
+
+    decided_signals = total_target_hit + total_sl_hit
+    win_rate = round((total_target_hit / decided_signals) * 100, 1) if decided_signals > 0 else 0.0
+
+    verification_goal = 200
+    progress_percentage = round(min((decided_signals / verification_goal) * 100, 100), 1)
+
+    return {
+        "success": True,
+        "stats": {
+            "total_signals_ever": total_signals_ever,
+            "total_target_hit": total_target_hit,
+            "total_sl_hit": total_sl_hit,
+            "total_active": total_active,
+            "total_expired": total_expired,
+            "decided_signals": decided_signals,
+            "win_rate_percentage": win_rate,
+            "verification_goal": verification_goal,
+            "progress_percentage": progress_percentage,
+            "is_goal_reached": decided_signals >= verification_goal,
+            "tracking_since": start_date.isoformat() if start_date else None
+        }
+    }
+
+
+@router.post("/admin/reset-accuracy-tracking")
+async def reset_accuracy_tracking(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    now = datetime.utcnow()
+    await db.app_settings.update_one(
+        {"_id": "accuracy_tracking"},
+        {"$set": {"start_date": now}},
+        upsert=True
+    )
+    return {
+        "success": True,
+        "message": "Accuracy tracking reset! Ab sirf is pal ke baad ke signals count honge.",
+        "tracking_since": now.isoformat()
+    }

@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import connect_to_mongo, close_mongo_connection
 from app.services.dhan_websocket import dhan_ws_client
+from app.services.eod_scheduler import eod_auto_square_off_loop
 from app.api.v1.endpoints import signals, market_data, auth
 from app.api.v1.endpoints import paper_trade
 
@@ -25,7 +26,7 @@ logger = logging.getLogger("OptionSaathi-Main")
 async def lifespan(app: FastAPI):
     # 1. Startup Actions
     logger.info("🚀 Starting OptionSaathi Python Multi-Index AI Engine...")
-    
+
     # Initialize Async MongoDB Driver
     await connect_to_mongo()
 
@@ -33,11 +34,16 @@ async def lifespan(app: FastAPI):
     ws_task = asyncio.create_task(dhan_ws_client.connect_and_listen())
     logger.info("📡 Dhan Live WebSocket Feed Task Initialized in Background.")
 
+    # Spawn EOD Auto Square-Off Scheduler (mimics real broker MIS square-off behaviour)
+    eod_task = asyncio.create_task(eod_auto_square_off_loop())
+    logger.info("⏱️ EOD Auto Square-Off Scheduler Task Initialized in Background.")
+
     yield  # Application Runs Here
 
     # 2. Shutdown Actions
     logger.info("🛑 Shutting down OptionSaathi Engine...")
     ws_task.cancel()
+    eod_task.cancel()
     await close_mongo_connection()
     logger.info("✅ Graceful Shutdown Complete.")
 
