@@ -153,6 +153,7 @@ async def get_paper_positions(
             "margin_used": float(doc.get("margin_used", 0.0)),
             "net_pnl": float(doc.get("net_pnl", 0.0)),
             "status": doc.get("status", "OPEN"),
+            "exit_reason": doc.get("exit_reason", ""),
             "created_at": doc.get("created_at").isoformat() if doc.get("created_at") else ""
         })
 

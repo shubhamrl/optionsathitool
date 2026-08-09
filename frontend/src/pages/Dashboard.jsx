@@ -45,7 +45,12 @@ export default function Dashboard() {
     NIFTY: 0, BANKNIFTY: 0, SENSEX: 0, FINNIFTY: 0
   });
   // Admin States
-  const [adminStats, setAdminStats] = useState({ total_users: 0, total_trades: 0, target_hits: 0, sl_hits: 0 });
+   const [adminStats, setAdminStats] = useState({ total_users: 0, total_trades: 0, target_hits: 0, sl_hits: 0 });
+  const [accuracyStats, setAccuracyStats] = useState({
+    total_signals_ever: 0, total_target_hit: 0, total_sl_hit: 0, total_active: 0, total_expired: 0,
+    decided_signals: 0, win_rate_percentage: 0, verification_goal: 200,
+    progress_percentage: 0, is_goal_reached: false
+  });
   const [usersList, setUsersList] = useState([]);
   const [selectedAdminUser, setSelectedAdminUser] = useState(null);
   const [adminUserTrades, setAdminUserTrades] = useState([]);
@@ -71,15 +76,34 @@ export default function Dashboard() {
     } catch (e) {}
   };
 
-  const fetchAdminData = async () => {
+const fetchAdminData = async () => {
     try {
-      const [statsRes, usersRes] = await Promise.all([
+      const [statsRes, usersRes, accuracyRes] = await Promise.all([
         axios.get(`${API_BASE_URL}/signals/admin/today-stats`),
-        axios.get(`${API_BASE_URL}/auth/admin/users-list`)
+        axios.get(`${API_BASE_URL}/auth/admin/users-list`),
+        axios.get(`${API_BASE_URL}/signals/admin/overall-accuracy`)
       ]);
       if (statsRes.data.success) setAdminStats(statsRes.data.stats);
       if (usersRes.data.success) setUsersList(usersRes.data.users);
+      if (accuracyRes.data.success) setAccuracyStats(accuracyRes.data.stats);
     } catch (e) {}
+  };
+
+  const handleResetAccuracyTracking = async () => {
+    if (!window.confirm(
+      "Pakka? Isse purane sabhi test signals ab Live Accuracy Verification card me count nahi honge — sirf ab se aage ke naye signals count honge. Ye action undo nahi ho sakta."
+    )) {
+      return;
+    }
+    try {
+      const res = await axios.post(`${API_BASE_URL}/signals/admin/reset-accuracy-tracking`);
+      if (res.data && res.data.success) {
+        alert("✅ Tracking reset ho gaya! Ab se naye signals hi count honge.");
+        fetchAdminData();
+      }
+    } catch (e) {
+      alert("Reset failed, dubara try karein.");
+    }
   };
 
   const fetchUserTradesForAdmin = async (userId) => {
@@ -564,9 +588,17 @@ const openPositionsList = paperPositions.filter(p => p.status === 'OPEN');
                           <td className="p-2.5 text-red-400">₹{sig.stop_loss}</td>
                           <td className="p-2.5 text-emerald-400">₹{sig.shz_upper}</td>
                           <td className="p-2.5">
-                            <span className={`px-2 py-0.5 rounded text-[10px] md:text-xs font-bold ${sig.status === 'TARGET_HIT' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : sig.status === 'SL_HIT' ? 'bg-red-500/20 text-red-400 border border-red-500/40' : 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30'}`}>
+                            <span className={`px-2 py-0.5 rounded text-[10px] md:text-xs font-bold ${
+                              sig.status === 'TARGET_HIT' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                              : sig.status === 'SL_HIT' ? 'bg-red-500/20 text-red-400 border border-red-500/40'
+                              : sig.status === 'EXPIRED' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                              : 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30'
+                            }`}>
                               {sig.status}
                             </span>
+                             {sig.status === 'EXPIRED' && sig.exit_reason && (
+                              <p className="text-[9px] text-slate-500 mt-1">{sig.exit_reason}</p>
+                            )}
                           </td>
                         </tr>
                       ))
@@ -660,10 +692,13 @@ const openPositionsList = paperPositions.filter(p => p.status === 'OPEN');
                             <td className={`p-3 font-extrabold ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                               {pnl >= 0 ? `+₹${pnl}` : `-₹${Math.abs(pnl)}`}
                             </td>
-                            <td className="p-3">
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${p.status === 'OPEN' ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/40' : p.status === 'TARGET_HIT' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+                              <td className="p-3">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${p.status === 'OPEN' ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/40' : pnl >= 0 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
                                 {p.status}
                               </span>
+                              {p.status === 'SQUARED_OFF' && p.exit_reason && (
+                                <p className="text-[9px] text-slate-500 mt-1 max-w-[140px]">{p.exit_reason}</p>
+                              )}
                             </td>
                             <td className="p-3 text-right">
                               {p.status === 'OPEN' && (
@@ -691,21 +726,92 @@ const openPositionsList = paperPositions.filter(p => p.status === 'OPEN');
 
         {activeTab === 'ADMIN' && (
           <div className="space-y-6">
+            {/* 🎯 Real Accuracy Verification Tracker — cumulative across ALL signals ever,
+                used to validate actual win-rate before pricing/company decisions */}
+            <div className="bg-gradient-to-br from-indigo-900/40 to-slate-900/80 border border-indigo-500/30 rounded-3xl p-5 md:p-6">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+                <div>
+                  <h3 className="text-base md:text-lg font-bold text-slate-100 flex items-center gap-2">
+                    <Target className="w-5 h-5 text-indigo-400" /> Live Accuracy Verification
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {accuracyStats.decided_signals} / {accuracyStats.verification_goal} signals verified
+                    {accuracyStats.is_goal_reached && ' — Goal Reached! ✅'}
+                  </p>
+                  {accuracyStats.tracking_since ? (
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Tracking since: {new Date(accuracyStats.tracking_since).toLocaleString('en-IN')}
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-amber-400 mt-1">
+                      ⚠️ Tracking abhi reset nahi hua — purane test signals bhi count ho rahe hain
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="text-right">
+                    <p className="text-xs text-slate-400 mb-0.5">Real Win Rate</p>
+                    <p className={`text-3xl md:text-4xl font-extrabold ${accuracyStats.win_rate_percentage >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {accuracyStats.win_rate_percentage}%
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleResetAccuracyTracking}
+                    className="bg-slate-800 hover:bg-red-500/20 text-slate-400 hover:text-red-400 border border-slate-700 hover:border-red-500/40 px-3 py-2 rounded-xl text-[10px] font-bold whitespace-nowrap transition-all"
+                    title="Purana data clear karke fresh se count shuru karo"
+                  >
+                    🔄 Reset Tracking
+                  </button>
+                </div>
+              </div>
+
+              {/* Progress bar towards 200-signal goal */}
+              <div className="w-full bg-slate-800 rounded-full h-2.5 mb-4 overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-indigo-500 to-cyan-400 h-2.5 rounded-full transition-all"
+                  style={{ width: `${accuracyStats.progress_percentage}%` }}
+                ></div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <div className="bg-slate-950/50 rounded-xl p-3">
+                  <p className="text-[10px] text-slate-500 uppercase mb-0.5">Total Signals</p>
+                  <p className="text-lg font-bold text-slate-100">{accuracyStats.total_signals_ever}</p>
+                </div>
+                <div className="bg-slate-950/50 rounded-xl p-3">
+                  <p className="text-[10px] text-slate-500 uppercase mb-0.5">Target Hit</p>
+                  <p className="text-lg font-bold text-emerald-400">{accuracyStats.total_target_hit}</p>
+                </div>
+                <div className="bg-slate-950/50 rounded-xl p-3">
+                  <p className="text-[10px] text-slate-500 uppercase mb-0.5">SL Hit</p>
+                  <p className="text-lg font-bold text-red-400">{accuracyStats.total_sl_hit}</p>
+                </div>
+                <div className="bg-slate-950/50 rounded-xl p-3">
+                  <p className="text-[10px] text-slate-500 uppercase mb-0.5">Still Active</p>
+                  <p className="text-lg font-bold text-cyan-400">{accuracyStats.total_active}</p>
+                </div>
+                <div className="bg-slate-950/50 rounded-xl p-3">
+                  <p className="text-[10px] text-slate-500 uppercase mb-0.5">Expired (EOD)</p>
+                  <p className="text-lg font-bold text-amber-400">{accuracyStats.total_expired}</p>
+                </div>
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
               <div className="bg-slate-900/80 border border-slate-800 p-4 md:p-6 rounded-2xl">
                 <p className="text-[10px] md:text-xs font-bold text-slate-400 uppercase mb-1">Total Users</p>
                 <p className="text-xl md:text-3xl font-extrabold text-slate-100">{adminStats.total_users}</p>
               </div>
               <div className="bg-slate-900/80 border border-slate-800 p-4 md:p-6 rounded-2xl">
-                <p className="text-[10px] md:text-xs font-bold text-slate-400 uppercase mb-1">Total Trades</p>
+                <p className="text-[10px] md:text-xs font-bold text-slate-400 uppercase mb-1">Today's Trades</p>
                 <p className="text-xl md:text-3xl font-extrabold text-cyan-400">{adminStats.total_trades}</p>
               </div>
               <div className="bg-slate-900/80 border border-slate-800 p-4 md:p-6 rounded-2xl">
-                <p className="text-[10px] md:text-xs font-bold text-slate-400 uppercase mb-1">Target Hits</p>
+                <p className="text-[10px] md:text-xs font-bold text-slate-400 uppercase mb-1">Today's Target Hits</p>
                 <p className="text-xl md:text-3xl font-extrabold text-emerald-400">{adminStats.target_hits}</p>
               </div>
               <div className="bg-slate-900/80 border border-slate-800 p-4 md:p-6 rounded-2xl">
-                <p className="text-[10px] md:text-xs font-bold text-slate-400 uppercase mb-1">SL Hits</p>
+                <p className="text-[10px] md:text-xs font-bold text-slate-400 uppercase mb-1">Today's SL Hits</p>
                 <p className="text-xl md:text-3xl font-extrabold text-red-400">{adminStats.sl_hits}</p>
               </div>
             </div>
