@@ -3,7 +3,7 @@ import json
 import logging
 import struct
 import websockets
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Set, Optional
 
 from app.core.config import settings
@@ -11,6 +11,11 @@ from app.engine.ai_surveillance import AISurveillanceEngine
 from app.services.dhan_binary_parser import parse_dhan_binary_feed
 
 logger = logging.getLogger(__name__)
+
+IST_OFFSET = timedelta(hours=5, minutes=30)
+MARKET_OPEN_HOUR, MARKET_OPEN_MIN = 9, 15
+ORB_CLOSE_HOUR, ORB_CLOSE_MIN = 9, 30
+MAX_CANDLES_STORED = 30
 
 # Central Spot Index Tokens Config
 INDEX_SPOT_TOKENS = {
@@ -31,6 +36,103 @@ market_data_store: Dict[str, Dict[str, Dict[str, Any]]] = {
 security_id_to_index_map: Dict[str, str] = {}
 active_positions_tracker: Dict[str, List[Dict[str, Any]]] = {}
 subscribed_security_ids: Set[str] = set()
+
+# 🕯️ Rolling 1-minute candle store per index (built live from spot ticks) — used to
+# detect real price-action momentum (e.g. "big green candle followed by a red candle
+# means booking/selling pressure"), which pure PCR/OI snapshots can't see.
+index_candle_store: Dict[str, List[Dict[str, Any]]] = {idx: [] for idx in INDEX_SPOT_TOKENS.values()}
+_current_candle: Dict[str, Dict[str, Any]] = {}
+
+# 📐 Real Opening Range (9:15–9:30 AM IST) high/low per index, per day — replaces the
+# old hardcoded orb_high=0.0 / orb_low=0.0 that made the Standard Signal's ORB trigger
+# permanently dead.
+index_orb_store: Dict[str, Dict[str, Any]] = {
+    idx: {"date": None, "orb_high": 0.0, "orb_low": 0.0, "locked": False}
+    for idx in INDEX_SPOT_TOKENS.values()
+}
+
+
+def _now_ist() -> datetime:
+    return datetime.utcnow() + IST_OFFSET
+
+
+def _update_candle_and_orb(index_name: str, ltp: float, ist_now: datetime):
+    minute_key = ist_now.strftime("%H:%M")
+    today_str = ist_now.strftime("%Y-%m-%d")
+
+    cur = _current_candle.get(index_name)
+    if cur is None or cur["minute"] != minute_key:
+        if cur is not None:
+            index_candle_store[index_name].append({
+                "minute": cur["minute"], "open": cur["open"],
+                "high": cur["high"], "low": cur["low"], "close": cur["close"]
+            })
+            if len(index_candle_store[index_name]) > MAX_CANDLES_STORED:
+                index_candle_store[index_name] = index_candle_store[index_name][-MAX_CANDLES_STORED:]
+        _current_candle[index_name] = {"minute": minute_key, "open": ltp, "high": ltp, "low": ltp, "close": ltp}
+    else:
+        cur["high"] = max(cur["high"], ltp)
+        cur["low"] = min(cur["low"], ltp)
+        cur["close"] = ltp
+
+    orb = index_orb_store[index_name]
+    if orb["date"] != today_str:
+        orb["date"] = today_str
+        orb["orb_high"] = 0.0
+        orb["orb_low"] = 0.0
+        orb["locked"] = False
+
+    within_orb_window = (
+        (ist_now.hour, ist_now.minute) >= (MARKET_OPEN_HOUR, MARKET_OPEN_MIN)
+        and (ist_now.hour, ist_now.minute) < (ORB_CLOSE_HOUR, ORB_CLOSE_MIN)
+    )
+    if within_orb_window and not orb["locked"]:
+        orb["orb_high"] = ltp if orb["orb_high"] == 0.0 else max(orb["orb_high"], ltp)
+        orb["orb_low"] = ltp if orb["orb_low"] == 0.0 else min(orb["orb_low"], ltp)
+    elif (ist_now.hour, ist_now.minute) >= (ORB_CLOSE_HOUR, ORB_CLOSE_MIN):
+        orb["locked"] = True
+
+
+def get_orb_levels(index_name: str) -> Dict[str, float]:
+    """Real Opening Range high/low for today, or 0.0/0.0 if not yet built (e.g. before
+    9:30 AM, or on a day the server started after the opening window)."""
+    orb = index_orb_store.get(index_name, {})
+    return {"orb_high": orb.get("orb_high", 0.0), "orb_low": orb.get("orb_low", 0.0)}
+
+
+def get_price_momentum(index_name: str) -> Dict[str, Any]:
+    """
+    Reads the rolling 1-minute candle history to detect real price-action momentum:
+      1. Reversal pattern: a strong-bodied candle followed by an opposite-colour
+         candle (e.g. big green then red = likely profit-booking/selling pressure).
+      2. Fallback: short-term directional slope over the last few candles.
+    Returns {"bias": "CE"|"PE"|"NEUTRAL", "reason": str}.
+    """
+    candles = index_candle_store.get(index_name, [])
+    if len(candles) < 2:
+        return {"bias": "NEUTRAL", "reason": "Not enough live candle history yet."}
+
+    idx_config = settings.INDICES_CONFIG.get(index_name.upper(), settings.INDICES_CONFIG["NIFTY"])
+    threshold = idx_config.get("min_sl_points", 8.0) * 0.6
+
+    last = candles[-1]
+    prev = candles[-2]
+    last_body = last["close"] - last["open"]
+    prev_body = prev["close"] - prev["open"]
+
+    if prev_body >= threshold and last_body < 0:
+        return {"bias": "PE", "reason": "Strong up-candle followed by a red candle — likely profit-booking/selling pressure."}
+    if prev_body <= -threshold and last_body > 0:
+        return {"bias": "CE", "reason": "Strong down-candle followed by a green candle — likely short-covering/buying pressure."}
+
+    recent = candles[-4:] if len(candles) >= 4 else candles
+    net_change = recent[-1]["close"] - recent[0]["open"]
+    if net_change >= threshold * 0.5:
+        return {"bias": "CE", "reason": f"Price grinding higher over the last {len(recent)} minute(s)."}
+    if net_change <= -threshold * 0.5:
+        return {"bias": "PE", "reason": f"Price grinding lower over the last {len(recent)} minute(s)."}
+
+    return {"bias": "NEUTRAL", "reason": "No clear directional momentum in recent price action."}
 
 
 class DhanWebSocketClient:
@@ -59,10 +161,8 @@ class DhanWebSocketClient:
                     self.is_connected = True
                     logger.info("✅ Dhan Live Marketfeed Connected!")
 
-                    # 🟢 Step 1: Auto-subscribe All Main Index Spot Tokens (NIFTY, BANKNIFTY, SENSEX, FINNIFTY)
                     await self._subscribe_index_spots()
 
-                    # Step 2: Resubscribe option tokens if reconnecting
                     if subscribed_security_ids:
                         await self.subscribe_symbols(list(subscribed_security_ids))
 
@@ -79,12 +179,11 @@ class DhanWebSocketClient:
                 await asyncio.sleep(self.reconnect_delay)
 
     async def _subscribe_index_spots(self):
-        """Subscribe Spot Indices (Segment: IDX_I / BSE_FNO)"""
         spot_instruments = [
-            {"ExchangeSegment": "IDX_I", "SecurityId": "13"},   # NIFTY
-            {"ExchangeSegment": "IDX_I", "SecurityId": "25"},   # BANKNIFTY
-            {"ExchangeSegment": "IDX_I", "SecurityId": "27"},   # FINNIFTY
-            {"ExchangeSegment": "BSE_FNO", "SecurityId": "51"}  # SENSEX
+            {"ExchangeSegment": "IDX_I", "SecurityId": "13"},
+            {"ExchangeSegment": "IDX_I", "SecurityId": "25"},
+            {"ExchangeSegment": "IDX_I", "SecurityId": "27"},
+            {"ExchangeSegment": "BSE_FNO", "SecurityId": "51"}
         ]
         payload = {
             "RequestCode": 15,
@@ -119,13 +218,12 @@ class DhanWebSocketClient:
         sec_id = tick["security_id"]
         ltp = tick.get("ltp", 0.0)
 
-        # 🟢 A. Handle Index Spot Price Ticks
         if sec_id in INDEX_SPOT_TOKENS and ltp > 0:
             idx_name = INDEX_SPOT_TOKENS[sec_id]
             market_data_store[idx_name]["spot"] = round(ltp, 2)
+            _update_candle_and_orb(idx_name, ltp, _now_ist())
             return
 
-        # 🟢 B. Handle Option Contract LTP Ticks
         index_name = security_id_to_index_map.get(sec_id, "NIFTY")
         if index_name in market_data_store:
             if sec_id not in market_data_store[index_name]:
@@ -133,7 +231,6 @@ class DhanWebSocketClient:
             if ltp > 0:
                 market_data_store[index_name][sec_id]["ltp"] = round(ltp, 2)
 
-        # 🟢 C. Real-time Target / SL Hit Monitoring
         if sec_id in active_positions_tracker and ltp > 0:
             asyncio.create_task(self._evaluate_active_position_exit(sec_id, ltp, broadcast_callback))
 
@@ -160,13 +257,11 @@ class DhanWebSocketClient:
                     from bson import ObjectId
                     db = await get_database()
 
-                    # 1) Update the signal status
                     await db.signals.update_one(
                         {"_id": ObjectId(signal_id)},
                         {"$set": {"status": status_update, "exit_ltp": current_ltp}}
                     )
 
-                    # 2) Auto square-off the linked paper trade (if one was executed)
                     if trade_id:
                         await self._auto_square_off_paper_trade(
                             db, trade_id, current_ltp, status_update, broadcast_callback
@@ -191,14 +286,12 @@ class DhanWebSocketClient:
             active_positions_tracker.pop(sec_id, None)
 
     async def _auto_square_off_paper_trade(self, db, trade_id: str, exit_ltp: float, exit_reason: str, broadcast_callback=None):
-        """SL/Target hit hone par linked OPEN paper_trades record ko auto square-off karta hai,
-        margin refund + net PnL wallet me credit/debit karta hai."""
         from bson import ObjectId
         from app.models.paper_trading import calculate_indian_option_charges
 
         trade = await db.paper_trades.find_one({"_id": ObjectId(trade_id)})
         if not trade or trade.get("status") != "OPEN":
-            return  # Already manually closed, ya trade exist nahi karta
+            return
 
         user_id = trade["user_id"]
         buy_price = trade["buy_price"]
@@ -276,9 +369,6 @@ def track_active_position_trade(security_id: str, signal_id: str, target: float,
 
 
 def link_paper_trade_to_position(security_id: str, signal_id: str, trade_id: str):
-    """Paper trade place hone ke baad, us signal ke liye pehle se tracked
-    active_positions_tracker entry me trade_id attach karta hai — taaki
-    SL/Target hit hone par yehi paper trade auto square-off ho sake."""
     sec_id_str = str(security_id)
     positions = active_positions_tracker.get(sec_id_str, [])
     found = False

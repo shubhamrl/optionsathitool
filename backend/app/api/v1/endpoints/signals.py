@@ -13,7 +13,9 @@ from app.engine.confluence_math import calculate_pcr_and_sentiment, calculate_op
 from app.services.dhan_websocket import (
     market_data_store,
     track_active_position_trade,
-    dhan_ws_client
+    dhan_ws_client,
+    get_orb_levels,
+    get_price_momentum
 )
 from app.services.token_registry import fetch_expiry_list, fetch_full_option_chain_data
 
@@ -88,14 +90,16 @@ async def decode_market_signal(
     if not atm_node:
         return {"success": False, "message": f"Could not find ATM node for strike {atm_strike}"}
 
+    orb_levels = get_orb_levels(index_name)
+
     ai_engine = AISurveillanceEngine(index_name)
     ai_result = ai_engine.evaluate_market_state(
         spot=spot,
         atm_strike=atm_strike,
         oc_data=oc,
         spot_history=[spot],
-        orb_high=0.0,
-        orb_low=0.0
+        orb_high=orb_levels["orb_high"],
+        orb_low=orb_levels["orb_low"]
     )
 
     signal = ai_result["signal"]
@@ -221,16 +225,40 @@ async def decode_force_scalp(
 
         pcr, sentiment = calculate_pcr_and_sentiment(oc)
 
+        # Real price momentum from live 1-minute candles (reversal pattern / short-term slope) —
+        # this is now the PRIMARY decision-maker, since it reflects actual live buying/selling
+        # pressure, which a static PCR/OI snapshot cannot see.
+        price_momentum = get_price_momentum(index_name)
+
         resistance_strike, support_strike = get_oi_support_resistance(oc)
         if resistance_strike and support_strike:
             oi_mid_level = (resistance_strike + support_strike) / 2
-            momentum_bias = "CE" if spot > oi_mid_level else "PE"
+            oi_wall_bias = "CE" if spot > oi_mid_level else "PE"
         else:
-            momentum_bias = "CE" if pcr >= 1.0 else "PE"
+            oi_wall_bias = None
 
-        pcr_bias = "CE" if pcr >= 0.95 else "PE"
+        # Symmetric, tighter PCR bias (0.95–1.05 = genuinely neutral, no lean either way)
+        if pcr > 1.05:
+            pcr_bias = "CE"
+        elif pcr < 0.95:
+            pcr_bias = "PE"
+        else:
+            pcr_bias = None
 
-        selected_type = momentum_bias if momentum_bias == pcr_bias else pcr_bias
+        direction_reason = ""
+        if price_momentum["bias"] in ("CE", "PE"):
+            selected_type = price_momentum["bias"]
+            direction_reason = f"Price Action: {price_momentum['reason']}"
+        elif oi_wall_bias and pcr_bias and oi_wall_bias == pcr_bias:
+            selected_type = oi_wall_bias
+            direction_reason = "PCR and OI-wall positioning both confirm this direction."
+        elif pcr_bias:
+            selected_type = pcr_bias
+            direction_reason = f"PCR bias fallback (PCR {pcr}, {sentiment})."
+        else:
+            selected_type = "CE" if oi_wall_bias is None else oi_wall_bias
+            direction_reason = "Neutral PCR/momentum — defaulting on OI-wall positioning."
+
         signal = "BUY CALL" if selected_type == "CE" else "BUY PUT"
 
         atm_node = None
@@ -283,8 +311,9 @@ async def decode_force_scalp(
             "shz_lower": risk_result["stop_loss"],
             "target2": risk_result["target2"],
             "score": 5.0,
-            "reasons": [
+              "reasons": [
                 "HIGH-RISK FORCED SCALP: Triggered by trader override",
+                direction_reason,
                 f"Market Bias: PCR {pcr} ({sentiment})",
                 "Dynamic Micro StopLoss applied based on live Delta/ATR/IV"
             ],
