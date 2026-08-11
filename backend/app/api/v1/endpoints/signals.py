@@ -91,6 +91,7 @@ async def decode_market_signal(
         return {"success": False, "message": f"Could not find ATM node for strike {atm_strike}"}
 
     orb_levels = get_orb_levels(index_name)
+    price_momentum = get_price_momentum(index_name)
 
     ai_engine = AISurveillanceEngine(index_name)
     ai_result = ai_engine.evaluate_market_state(
@@ -99,7 +100,8 @@ async def decode_market_signal(
         oc_data=oc,
         spot_history=[spot],
         orb_high=orb_levels["orb_high"],
-        orb_low=orb_levels["orb_low"]
+        orb_low=orb_levels["orb_low"],
+        price_momentum=price_momentum
     )
 
     signal = ai_result["signal"]
@@ -225,9 +227,6 @@ async def decode_force_scalp(
 
         pcr, sentiment = calculate_pcr_and_sentiment(oc)
 
-        # Real price momentum from live 1-minute candles (reversal pattern / short-term slope) —
-        # this is now the PRIMARY decision-maker, since it reflects actual live buying/selling
-        # pressure, which a static PCR/OI snapshot cannot see.
         price_momentum = get_price_momentum(index_name)
 
         resistance_strike, support_strike = get_oi_support_resistance(oc)
@@ -237,7 +236,6 @@ async def decode_force_scalp(
         else:
             oi_wall_bias = None
 
-        # Symmetric, tighter PCR bias (0.95–1.05 = genuinely neutral, no lean either way)
         if pcr > 1.05:
             pcr_bias = "CE"
         elif pcr < 0.95:
@@ -311,7 +309,7 @@ async def decode_force_scalp(
             "shz_lower": risk_result["stop_loss"],
             "target2": risk_result["target2"],
             "score": 5.0,
-              "reasons": [
+            "reasons": [
                 "HIGH-RISK FORCED SCALP: Triggered by trader override",
                 direction_reason,
                 f"Market Bias: PCR {pcr} ({sentiment})",
