@@ -51,7 +51,8 @@ class AISurveillanceEngine:
         oc_data: Dict[str, Any],
         spot_history: list,
         orb_high: float,
-        orb_low: float
+        orb_low: float,
+        price_momentum: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Internal AI Brain: Scans IV, Greeks, PCR, OI, Range Breakouts in real-time
@@ -82,6 +83,17 @@ class AISurveillanceEngine:
         elif pcr < 0.90:
             pe_score += 2.0
             ai_reasons.append(f"AI_PCR_CONFIRMATION: Bearish Call Writing Buildup (PCR {pcr})")
+
+        # 2b. Real Price-Action Momentum (live 1-minute candles) — third confluence factor.
+        # Without this, max possible score was ORB(3.0) + PCR(2.0) = 5.0, which could NEVER
+        # cross the 6.0 confidence gate even on a perfect setup — Standard Signal was
+        # structurally always "NO TRADE". This adds the missing headroom.
+        if price_momentum and price_momentum.get("bias") == "CE":
+            ce_score += 2.0
+            ai_reasons.append(f"AI_MOMENTUM_CONFIRMATION: {price_momentum.get('reason', '')}")
+        elif price_momentum and price_momentum.get("bias") == "PE":
+            pe_score += 2.0
+            ai_reasons.append(f"AI_MOMENTUM_CONFIRMATION: {price_momentum.get('reason', '')}")
 
         # 3. Decision Matrix
         signal = "NO TRADE"
