@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Set, Optional
 from app.core.config import settings
 from app.engine.ai_surveillance import AISurveillanceEngine
 from app.services.dhan_binary_parser import parse_dhan_binary_feed
+from app.services.feature_logger import update_signal_outcome, OUTCOME_TARGET_HIT, OUTCOME_SL_HIT
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +262,9 @@ class DhanWebSocketClient:
                         {"_id": ObjectId(signal_id)},
                         {"$set": {"status": status_update, "exit_ltp": current_ltp}}
                     )
+
+                    outcome_code = OUTCOME_TARGET_HIT if status_update == "TARGET_HIT" else OUTCOME_SL_HIT
+                    await update_signal_outcome(db, signal_id, outcome_code)
 
                     if trade_id:
                         await self._auto_square_off_paper_trade(
