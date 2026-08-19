@@ -13,7 +13,13 @@ const WS_BASE_URL = isLocal ? 'ws://localhost:8000' : 'wss://optionsathitool.onr
 
 export default function Dashboard() {
   const { user, serverWakingUp, loginWithGoogleToken, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState('TRADING');
+    const [activeTab, setActiveTab] = useState(() => {
+    try {
+      return localStorage.getItem('optionsaathi_active_tab') || 'TRADING';
+    } catch (e) {
+      return 'TRADING';
+    }
+  });
   const [selectedIndex, setSelectedIndex] = useState('NIFTY');
   const [liveSpot, setLiveSpot] = useState(0.0);
   const [pcr, setPcr] = useState(1.0);
@@ -55,9 +61,18 @@ export default function Dashboard() {
   const [selectedAdminUser, setSelectedAdminUser] = useState(null);
   const [adminUserTrades, setAdminUserTrades] = useState([]);
 
-   const wsRef = useRef(null);
+    const wsRef = useRef(null);
   const wsRefs = useRef({}); // { INDEX_NAME: WebSocket } — open positions kai indices me ho sakti hain
   const selectedIndexRef = useRef(selectedIndex); // WebSocket closures ke liye hamesha latest selectedIndex
+
+  // 🔖 Active tab ko localStorage me persist karo — refresh hone par user usi tab
+  // (TRADING/PAPER/ADMIN) par wapas aana chahiye, hamesha default TRADING par nahi.
+  useEffect(() => {
+    try {
+      localStorage.setItem('optionsaathi_active_tab', activeTab);
+    } catch (e) {}
+  }, [activeTab]);
+
 
     useEffect(() => {
     selectedIndexRef.current = selectedIndex;
@@ -669,9 +684,9 @@ const openPositionsList = paperPositions.filter(p => p.status === 'OPEN');
     </button>
   )}
 </div>
-              <div className="overflow-x-auto">
+               <div className="overflow-x-auto max-h-[500px] overflow-y-auto rounded-xl border border-slate-800">
                 <table className="w-full text-left text-xs md:text-sm text-slate-300 min-w-[700px]">
-                  <thead className="bg-slate-900 text-slate-400 border-b border-slate-800 uppercase text-[10px]">
+                  <thead className="bg-slate-900 text-slate-400 border-b border-slate-800 uppercase text-[10px] sticky top-0 z-10">
                     <tr>
                       <th className="p-3">Index</th>
                       <th className="p-3">Strike</th>

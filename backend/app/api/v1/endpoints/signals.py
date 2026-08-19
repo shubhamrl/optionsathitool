@@ -15,9 +15,11 @@ from app.services.dhan_websocket import (
     track_active_position_trade,
     dhan_ws_client,
     get_orb_levels,
-    get_price_momentum
+    get_price_momentum,
+    register_token_index_mapping
 )
 from app.services.token_registry import fetch_expiry_list, fetch_full_option_chain_data
+from app.services.feature_logger import log_signal_features, update_signal_outcome, OUTCOME_TARGET_HIT, OUTCOME_SL_HIT
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -47,6 +49,22 @@ async def get_or_fetch_expiry(index_name: str) -> Optional[str]:
     return None
 
 
+def _register_index_token_map(oc: Dict[str, Any], index_name: str):
+    """Registers security_id -> index_name for every contract in this option chain,
+    so live WebSocket ticks route into the CORRECT index bucket in market_data_store
+    instead of silently defaulting to NIFTY."""
+    token_map = {}
+    for node in oc.values():
+        ce_id = str((node.get("ce") or {}).get("security_id") or "")
+        pe_id = str((node.get("pe") or {}).get("security_id") or "")
+        if ce_id:
+            token_map[ce_id] = index_name
+        if pe_id:
+            token_map[pe_id] = index_name
+    if token_map:
+        register_token_index_mapping(token_map)
+
+
 @router.post("/decode")
 async def decode_market_signal(
     payload: DecodeRequest,
@@ -74,6 +92,8 @@ async def decode_market_signal(
 
     if spot <= 0 or not oc:
         return {"success": False, "message": "Incomplete option chain data received from Dhan."}
+
+    _register_index_token_map(oc, index_name)
 
     step = idx_config["step_size"]
     atm_strike = int(round(spot / step) * step)
@@ -191,6 +211,14 @@ async def decode_market_signal(
             target=risk_result["target1"],
             sl=risk_result["stop_loss"]
         )
+
+        orb_triggered = "CE" if spot > orb_levels["orb_high"] > 0 else ("PE" if 0 < orb_levels["orb_low"] and spot < orb_levels["orb_low"] else None)
+        await log_signal_features(
+            db=db, signal_id=signal_id, index_name=index_name, mode="standard",
+            pcr=ai_result["pcr"], delta=greeks["delta"], iv=iv, score=ai_result["ai_score"],
+            selected_type=selected_type, momentum_bias=price_momentum.get("bias") if price_momentum else None,
+            orb_triggered=orb_triggered
+        )
     else:
         signal_doc["_id"] = str(existing["_id"])
 
@@ -221,6 +249,8 @@ async def decode_force_scalp(
 
         if spot <= 0 or not oc:
             return {"success": False, "message": "Incomplete market data for forced scalp."}
+
+        _register_index_token_map(oc, index_name)
 
         step = idx_config["step_size"]
         atm_strike = int(round(spot / step) * step)
@@ -322,7 +352,7 @@ async def decode_force_scalp(
             "security_id": security_id,
             "status": "ACTIVE",
             "created_at": datetime.utcnow()
-        }
+       }
 
         res = await db.signals.insert_one(signal_doc)
         signal_id = str(res.inserted_id)
@@ -333,6 +363,13 @@ async def decode_force_scalp(
             signal_id=signal_id,
             target=risk_result["target1"],
             sl=risk_result["stop_loss"]
+        )
+
+        await log_signal_features(
+            db=db, signal_id=signal_id, index_name=index_name, mode="scalp",
+            pcr=pcr, delta=0.52, iv=iv, score=5.0,
+            selected_type=selected_type, momentum_bias=price_momentum.get("bias"),
+            orb_triggered=None
         )
 
         return {"success": True, "data": signal_doc}
@@ -401,7 +438,8 @@ async def batch_live_ltp_update(
                     {"_id": sig["_id"], "status": "ACTIVE"},
                     {"$set": {"status": updated_status, "exit_ltp": live_price, "updated_at": datetime.utcnow()}}
                 )
-
+                outcome_code = OUTCOME_TARGET_HIT if updated_status == "TARGET_HIT" else OUTCOME_SL_HIT
+                await update_signal_outcome(db, str(sig["_id"]), outcome_code)
     return {"success": True, "prices": prices}
 
 

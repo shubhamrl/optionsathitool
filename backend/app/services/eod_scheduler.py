@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any
 
 from app.models.paper_trading import calculate_indian_option_charges
+from app.services.feature_logger import update_signal_outcome, OUTCOME_EXPIRED_PROFIT, OUTCOME_EXPIRED_LOSS
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,9 @@ async def _eod_close_signals(db, query_filter: Dict[str, Any]) -> int:
             }}
         )
 
+        outcome_code = OUTCOME_EXPIRED_PROFIT if exit_ltp >= entry else OUTCOME_EXPIRED_LOSS
+        await update_signal_outcome(db, str(sig["_id"]), outcome_code)
+
     logger.info(f"📤 [EOD AUTO EXPIRE] Marked {len(sigs)} signal(s) as EXPIRED.")
     return len(sigs)
 
@@ -149,17 +153,14 @@ async def eod_auto_square_off_loop():
             db = await get_database()
             ist_now = _now_ist()
 
-            # "Aaj" (IST) ki midnight ko UTC me convert kiya — isse pehle ka data "stale" hai
             ist_today_midnight_utc = datetime(ist_now.year, ist_now.month, ist_now.day) - IST_OFFSET
 
-            # 1. SAFETY NET — purane din ka bacha hua data, kabhi bhi time ho
             stale_filter = {"created_at": {"$lt": ist_today_midnight_utc}}
             await _eod_close_paper_trades(db, stale_filter)
             await _eod_close_signals(db, stale_filter)
 
-            # 2. SCHEDULED — aaj ka data, sirf 3:15 PM IST ke baad, weekdays par
             is_scheduled_time = (ist_now.hour, ist_now.minute) >= (EOD_HOUR, EOD_MINUTE)
-            is_weekday = ist_now.weekday() < 5  # Monday=0 ... Friday=4
+            is_weekday = ist_now.weekday() < 5
 
             if is_scheduled_time and is_weekday:
                 today_filter = {"created_at": {"$gte": ist_today_midnight_utc}}
