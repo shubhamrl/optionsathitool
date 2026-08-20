@@ -1222,7 +1222,7 @@ export default function Dashboard() {
                 ></div>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+               <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
                 <div className="bg-slate-950/50 rounded-xl p-3">
                   <p className="text-[10px] text-slate-500 uppercase mb-0.5">
                     Total Signals
@@ -1262,6 +1262,40 @@ export default function Dashboard() {
                   <p className="text-lg font-bold text-amber-400">
                     {accuracyStats.total_expired}
                   </p>
+                </div>
+              </div>
+
+              {/* 📊 Mode-wise split — Standard Signal (gated) vs Forced Scalp (ungated override) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="bg-indigo-950/30 border border-indigo-500/20 rounded-xl p-3">
+                  <p className="text-[10px] text-indigo-300 uppercase mb-1 font-bold">
+                    Standard Signal (Confluence-Gated)
+                  </p>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-400">
+                      {accuracyStats.standard_signal?.target_hit || 0}W /{" "}
+                      {accuracyStats.standard_signal?.sl_hit || 0}L (
+                      {accuracyStats.standard_signal?.decided || 0} decided)
+                    </span>
+                    <span className="text-lg font-extrabold text-indigo-300">
+                      {accuracyStats.standard_signal?.win_rate_percentage || 0}%
+                    </span>
+                  </div>
+                </div>
+                <div className="bg-amber-950/20 border border-amber-500/20 rounded-xl p-3">
+                  <p className="text-[10px] text-amber-300 uppercase mb-1 font-bold">
+                    Forced Scalp (Ungated Override)
+                  </p>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-400">
+                      {accuracyStats.forced_scalp?.target_hit || 0}W /{" "}
+                      {accuracyStats.forced_scalp?.sl_hit || 0}L (
+                      {accuracyStats.forced_scalp?.decided || 0} decided)
+                    </span>
+                    <span className="text-lg font-extrabold text-amber-300">
+                      {accuracyStats.forced_scalp?.win_rate_percentage || 0}%
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
