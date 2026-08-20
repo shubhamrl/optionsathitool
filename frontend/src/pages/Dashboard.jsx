@@ -495,6 +495,25 @@ const openPositionsList = paperPositions.filter(p => p.status === 'OPEN');
                 </div>
               </div>
 
+               {activeSignal && activeSignal.signal === 'MARKET_CLOSED' && (
+                <div className="bg-slate-950/80 border border-slate-700 p-5 rounded-2xl mt-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xl">🕒</span>
+                    <h3 className="text-lg font-bold text-slate-300">Market is Closed</h3>
+                  </div>
+                  <p className="text-sm text-slate-400 mb-3">{activeSignal.message}</p>
+                  {activeSignal.next_open && (
+                    <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-3">
+                      <p className="text-[10px] text-slate-500 uppercase mb-0.5">Next Market Open</p>
+                      <p className="text-sm font-bold text-cyan-400">{activeSignal.next_open}</p>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        AI will scan live OI walls, PCR and price momentum fresh once trading resumes — exact levels shown then.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {activeSignal && activeSignal.signal === 'NO TRADE' && (
                 <div className="bg-slate-950/80 border border-amber-500/30 p-5 rounded-2xl mt-4">
                   <div className="flex items-center gap-2 mb-3">

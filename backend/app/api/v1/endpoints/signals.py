@@ -20,6 +20,7 @@ from app.services.dhan_websocket import (
 )
 from app.services.token_registry import fetch_expiry_list, fetch_full_option_chain_data
 from app.services.feature_logger import log_signal_features, update_signal_outcome, OUTCOME_TARGET_HIT, OUTCOME_SL_HIT
+from app.core.market_hours import get_market_status
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -73,6 +74,18 @@ async def decode_market_signal(
 ):
     index_name = payload.index_name.upper()
     idx_config = settings.INDICES_CONFIG.get(index_name, settings.INDICES_CONFIG["NIFTY"])
+
+    market_status = get_market_status()
+    if not market_status["is_open"]:
+        return {
+            "success": True,
+            "data": {
+                "ok": True,
+                "signal": "MARKET_CLOSED",
+                "message": market_status["message"],
+                "next_open": market_status["next_open"]
+            }
+        }
 
     expiry = await get_or_fetch_expiry(index_name)
     if not expiry:
@@ -234,6 +247,18 @@ async def decode_force_scalp(
     try:
         index_name = payload.index_name.upper()
         idx_config = settings.INDICES_CONFIG.get(index_name, settings.INDICES_CONFIG["NIFTY"])
+
+        market_status = get_market_status()
+        if not market_status["is_open"]:
+            return {
+                "success": True,
+                "data": {
+                    "ok": True,
+                    "signal": "MARKET_CLOSED",
+                    "message": market_status["message"],
+                    "next_open": market_status["next_open"]
+                }
+            }
 
         expiry = await get_or_fetch_expiry(index_name)
         if not expiry:
