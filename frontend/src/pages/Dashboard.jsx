@@ -34,9 +34,12 @@ export default function Dashboard() {
    const [paperWallet, setPaperWallet] = useState({ balance: 100000, realized_pnl: 0, total_taxes_paid: 0 });
   const [paperPositions, setPaperPositions] = useState([]);
   const [paperLots, setPaperLots] = useState(1);
-  const [placingPaperTrade, setPlacingPaperTrade] = useState(false);
+   const [placingPaperTrade, setPlacingPaperTrade] = useState(false);
   const [exitingAll, setExitingAll] = useState(false);
 
+  // 📅 Date-wise history grouping for PAPER tab — today's trades open by default,
+  // older dates collapsed until clicked.
+  const [expandedDates, setExpandedDates] = useState({});
   // 🔒 Duplicate-trade guard — set to signal._id jab uske liye trade execute ho jaaye.
   // Naya DECODE SIGNAL aane par reset ho jaata hai.
   const [executedTradeSignalId, setExecutedTradeSignalId] = useState(null);
@@ -327,6 +330,39 @@ const openPositionsList = paperPositions.filter(p => p.status === 'OPEN');
 
     return { currentLtp, pnl: grossPnl, isLive: hasLiveTick };
   };
+
+  // 📅 Group paper positions by date (from created_at) — today's group expanded
+  // by default, older dates collapsed until the user clicks the date header.
+  const todayDateKey = new Date().toISOString().split('T')[0];
+
+  const getDateKey = (createdAt) => (createdAt ? createdAt.split('T')[0] : 'unknown');
+
+  const formatDateKey = (key) => {
+    if (key === todayDateKey) return 'Today';
+    const parts = key.split('-');
+    if (parts.length !== 3) return key;
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${parts[2]} ${months[parseInt(parts[1], 10) - 1]} ${parts[0]}`;
+  };
+
+  const groupedPositionsByDate = paperPositions.reduce((acc, p) => {
+    const key = getDateKey(p.created_at);
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(p);
+    return acc;
+  }, {});
+
+  const sortedDateKeys = Object.keys(groupedPositionsByDate).sort((a, b) => b.localeCompare(a));
+
+  const isDateExpanded = (key) => (key === todayDateKey ? expandedDates[key] !== false : !!expandedDates[key]);
+
+  const toggleDateExpand = (key) => {
+    setExpandedDates((prev) => ({ ...prev, [key]: !isDateExpanded(key) }));
+  };
+
+  const computeDatePnl = (trades) =>
+    trades.reduce((acc, p) => acc + (p.status === 'OPEN' ? getLivePositionMetrics(p).pnl : (p.net_pnl || 0)), 0);
+
   const totalUnrealizedPnl = paperPositions
     .filter(p => p.status === 'OPEN')
     .reduce((acc, p) => acc + getLivePositionMetrics(p).pnl, 0);
@@ -719,39 +755,65 @@ const openPositionsList = paperPositions.filter(p => p.status === 'OPEN');
                   </thead>
                   <tbody>
                     {paperPositions.length > 0 ? (
-                      paperPositions.map((p, idx) => {
-                        const { currentLtp, pnl, isLive } = getLivePositionMetrics(p);
+                      sortedDateKeys.map((dateKey) => {
+                        const dateTrades = groupedPositionsByDate[dateKey];
+                        const expanded = isDateExpanded(dateKey);
+                        const datePnl = computeDatePnl(dateTrades);
                         return (
-                          <tr key={p._id || idx} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                            <td className="p-3 font-semibold">{p.index_name}</td>
-                            <td className="p-3 font-medium">{p.strike}</td>
-                            <td className="p-3 text-slate-400">{p.quantity} ({p.lots} L)</td>
-                            <td className="p-3 font-semibold text-cyan-400">₹{p.buy_price}</td>
-                            <td className={`p-3 font-bold ${isLive ? 'text-slate-100 animate-pulse' : 'text-slate-500'}`}>
-                              ₹{currentLtp}
-                              {p.status === 'OPEN' && !isLive && (
-                                <span className="text-[9px] ml-1 text-slate-600">(syncing...)</span>
-                              )}
-                            </td>
-                            <td className={`p-3 font-extrabold ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                              {pnl >= 0 ? `+₹${pnl}` : `-₹${Math.abs(pnl)}`}
-                            </td>
-                              <td className="p-3">
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${p.status === 'OPEN' ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/40' : pnl >= 0 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
-                                {p.status}
-                              </span>
-                              {p.status === 'SQUARED_OFF' && p.exit_reason && (
-                                <p className="text-[9px] text-slate-500 mt-1 max-w-[140px]">{p.exit_reason}</p>
-                              )}
-                            </td>
-                            <td className="p-3 text-right">
-                              {p.status === 'OPEN' && (
-                                <button onClick={() => handleSquareOff(p._id, currentLtp)} className="bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40 px-3 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ml-auto">
-                                  <XCircle className="w-3.5 h-3.5" /> Exit
-                                </button>
-                              )}
-                            </td>
-                          </tr>
+                          <React.Fragment key={dateKey}>
+                            <tr
+                              onClick={() => toggleDateExpand(dateKey)}
+                              className="bg-slate-900/70 border-b border-slate-800 cursor-pointer hover:bg-slate-800/50 transition-all"
+                            >
+                              <td colSpan="8" className="p-2.5">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-slate-500 text-xs">{expanded ? '▾' : '▸'}</span>
+                                    <span className="font-bold text-slate-200 text-xs">{formatDateKey(dateKey)}</span>
+                                    <span className="text-[10px] text-slate-500">({dateTrades.length} trade{dateTrades.length > 1 ? 's' : ''})</span>
+                                  </div>
+                                  <span className={`text-xs font-extrabold ${datePnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                    {datePnl >= 0 ? `+₹${datePnl.toFixed(2)}` : `-₹${Math.abs(datePnl).toFixed(2)}`}
+                                  </span>
+                                </div>
+                              </td>
+                            </tr>
+                            {expanded && dateTrades.map((p, idx) => {
+                              const { currentLtp, pnl, isLive } = getLivePositionMetrics(p);
+                              return (
+                                <tr key={p._id || idx} className="border-b border-slate-800/50 hover:bg-slate-800/30">
+                                  <td className="p-3 font-semibold">{p.index_name}</td>
+                                  <td className="p-3 font-medium">{p.strike}</td>
+                                  <td className="p-3 text-slate-400">{p.quantity} ({p.lots} L)</td>
+                                  <td className="p-3 font-semibold text-cyan-400">₹{p.buy_price}</td>
+                                  <td className={`p-3 font-bold ${isLive ? 'text-slate-100 animate-pulse' : 'text-slate-500'}`}>
+                                    ₹{currentLtp}
+                                    {p.status === 'OPEN' && !isLive && (
+                                      <span className="text-[9px] ml-1 text-slate-600">(syncing...)</span>
+                                    )}
+                                  </td>
+                                  <td className={`p-3 font-extrabold ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                    {pnl >= 0 ? `+₹${pnl}` : `-₹${Math.abs(pnl)}`}
+                                  </td>
+                                  <td className="p-3">
+                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${p.status === 'OPEN' ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/40' : pnl >= 0 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+                                      {p.status}
+                                    </span>
+                                    {p.status === 'SQUARED_OFF' && p.exit_reason && (
+                                      <p className="text-[9px] text-slate-500 mt-1 max-w-[140px]">{p.exit_reason}</p>
+                                    )}
+                                  </td>
+                                  <td className="p-3 text-right">
+                                    {p.status === 'OPEN' && (
+                                      <button onClick={() => handleSquareOff(p._id, currentLtp)} className="bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40 px-3 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ml-auto">
+                                        <XCircle className="w-3.5 h-3.5" /> Exit
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </React.Fragment>
                         );
                       })
                     ) : (

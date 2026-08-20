@@ -53,16 +53,27 @@ async def _eod_close_paper_trades(db, query_filter: Dict[str, Any]) -> int:
     if not trades:
         return 0
 
+    closed_count = 0
     for trade in trades:
         trade_id = trade["_id"]
-        user_id = trade["user_id"]
-        buy_price = trade["buy_price"]
-        quantity = trade["quantity"]
-        margin_used = trade["margin_used"]
-        target = float(trade.get("target1", 0.0))
-        sl = float(trade.get("stop_loss", 0.0))
-        security_id = trade.get("security_id", "")
-        index_name = trade.get("index_name", "NIFTY")
+
+        # 🔒 Atomically CLAIM this trade — skip if already closed by a manual exit
+        # or the tick-based auto SL/Target monitor between the fetch above and now.
+        claimed = await db.paper_trades.find_one_and_update(
+            {"_id": trade_id, "status": "OPEN"},
+            {"$set": {"status": "CLOSING"}}
+        )
+        if not claimed:
+            continue
+
+        user_id = claimed["user_id"]
+        buy_price = claimed["buy_price"]
+        quantity = claimed["quantity"]
+        margin_used = claimed["margin_used"]
+        target = float(claimed.get("target1", 0.0))
+        sl = float(claimed.get("stop_loss", 0.0))
+        security_id = claimed.get("security_id", "")
+        index_name = claimed.get("index_name", "NIFTY")
 
         exit_ltp = await _get_live_ltp(index_name, security_id, buy_price)
         exit_reason = _determine_exit_reason(buy_price, target, sl, exit_ltp)
@@ -98,8 +109,10 @@ async def _eod_close_paper_trades(db, query_filter: Dict[str, Any]) -> int:
             }}
         )
 
-    logger.info(f"📤 [EOD AUTO SQUARE-OFF] Closed {len(trades)} paper trade(s).")
-    return len(trades)
+        closed_count += 1
+
+    logger.info(f"📤 [EOD AUTO SQUARE-OFF] Closed {closed_count} paper trade(s).")
+    return closed_count
 
 
 async def _eod_close_signals(db, query_filter: Dict[str, Any]) -> int:
