@@ -531,6 +531,19 @@ async def get_overall_accuracy_stats(
     decided_signals = total_target_hit + total_sl_hit
     win_rate = round((total_target_hit / decided_signals) * 100, 1) if decided_signals > 0 else 0.0
 
+    # 📊 Mode-wise breakdown — Standard Signal has strict confluence gates (ORB+PCR+Momentum),
+    # Forced Scalp is an intentional override with NO gates. Blending them hides whether
+    # low accuracy comes from genuine AI judgement (Standard) or ungated manual overrides (Scalp).
+    async def _mode_stats(breakout_status: str):
+        t_hit = await db.signals.count_documents({**date_filter, "status": "TARGET_HIT", "breakout_status": breakout_status})
+        s_hit = await db.signals.count_documents({**date_filter, "status": "SL_HIT", "breakout_status": breakout_status})
+        decided = t_hit + s_hit
+        wr = round((t_hit / decided) * 100, 1) if decided > 0 else 0.0
+        return {"target_hit": t_hit, "sl_hit": s_hit, "decided": decided, "win_rate_percentage": wr}
+
+    standard_stats = await _mode_stats("CONFLUENCE_DECODE")
+    scalp_stats = await _mode_stats("FORCED_SCALP")
+
     verification_goal = 200
     progress_percentage = round(min((decided_signals / verification_goal) * 100, 100), 1)
 
@@ -547,7 +560,9 @@ async def get_overall_accuracy_stats(
             "verification_goal": verification_goal,
             "progress_percentage": progress_percentage,
             "is_goal_reached": decided_signals >= verification_goal,
-            "tracking_since": start_date.isoformat() if start_date else None
+            "tracking_since": start_date.isoformat() if start_date else None,
+            "standard_signal": standard_stats,
+            "forced_scalp": scalp_stats
         }
     }
 
