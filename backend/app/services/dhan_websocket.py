@@ -293,9 +293,15 @@ class DhanWebSocketClient:
         from bson import ObjectId
         from app.models.paper_trading import calculate_indian_option_charges
 
-        trade = await db.paper_trades.find_one({"_id": ObjectId(trade_id)})
-        if not trade or trade.get("status") != "OPEN":
-            return
+        # 🔒 Atomically CLAIM this trade — only proceeds if still OPEN at this exact
+        # instant, preventing double wallet-credit if this races with a manual
+        # square-off or the EOD scheduler closing the same trade.
+        trade = await db.paper_trades.find_one_and_update(
+            {"_id": ObjectId(trade_id), "status": "OPEN"},
+            {"$set": {"status": "CLOSING"}}
+        )
+        if not trade:
+            return  # Already closed by another path
 
         user_id = trade["user_id"]
         buy_price = trade["buy_price"]
