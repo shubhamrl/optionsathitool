@@ -57,8 +57,6 @@ async def _eod_close_paper_trades(db, query_filter: Dict[str, Any]) -> int:
     for trade in trades:
         trade_id = trade["_id"]
 
-        # 🔒 Atomically CLAIM this trade — skip if already closed by a manual exit
-        # or the tick-based auto SL/Target monitor between the fetch above and now.
         claimed = await db.paper_trades.find_one_and_update(
             {"_id": trade_id, "status": "OPEN"},
             {"$set": {"status": "CLOSING"}}
@@ -179,6 +177,11 @@ async def eod_auto_square_off_loop():
                 today_filter = {"created_at": {"$gte": ist_today_midnight_utc}}
                 await _eod_close_paper_trades(db, today_filter)
                 await _eod_close_signals(db, today_filter)
+
+                # 🧹 Clear cached option-chain snapshots after market close — next
+                # day's data is completely different (new strikes/expiry context),
+                # so yesterday's snapshot is worthless and just wastes storage.
+                await db.market_snapshots.delete_many({})
 
         except asyncio.CancelledError:
             logger.info("⏱️ EOD Auto Square-Off Scheduler stopped.")
