@@ -16,6 +16,7 @@ import {
   TrendingUp,
   TrendingDown,
   XCircle,
+  Radar,
 } from "lucide-react";
 
 const INDICES = ["NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY"];
@@ -48,6 +49,10 @@ export default function Dashboard() {
   const [activeSignal, setActiveSignal] = useState(null);
   const [signalsLog, setSignalsLog] = useState([]);
   const [loadingDecode, setLoadingDecode] = useState(false);
+
+  // 🌐 Global AI Scanner — background-generated signals, pushed automatically
+  const [globalSignals, setGlobalSignals] = useState([]);
+  const [marketOpen, setMarketOpen] = useState(true);
   const [wsConnected, setWsConnected] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
 
@@ -130,6 +135,18 @@ export default function Dashboard() {
         `${API_BASE_URL}/signals/automated-signals-log`,
       );
       if (res.data && res.data.success) setSignalsLog(res.data.logs || []);
+    } catch (e) {}
+  };
+
+  const fetchGlobalSignalsLog = async () => {
+    try {
+      const res = await axios.get(
+        `${API_BASE_URL}/signals/global-signals-log`,
+      );
+      if (res.data && res.data.success) {
+        setGlobalSignals(res.data.logs || []);
+        setMarketOpen(res.data.is_market_open);
+      }
     } catch (e) {}
   };
 
@@ -260,6 +277,14 @@ export default function Dashboard() {
           if (Object.keys(tickUpdates).length > 0) {
             setOptionLtpStore((prev) => ({ ...prev, ...tickUpdates }));
           }
+        } else if (message.type === "GLOBAL_SIGNAL_UPDATE") {
+          const sig = message.signal;
+          if (sig) {
+            setGlobalSignals((prev) => {
+              const filtered = prev.filter((s) => s._id !== sig._id);
+              return [sig, ...filtered].slice(0, 20);
+            });
+          }
         } else if (
           message.type === "SIGNAL_STATUS_UPDATE" ||
           message.type === "PAPER_TRADE_AUTO_CLOSED"
@@ -267,6 +292,7 @@ export default function Dashboard() {
           // Auto SL/Target exit hone par turant refresh (backend se broadcast aata hai)
           fetchSignalsLog();
           fetchPaperData();
+          fetchGlobalSignalsLog();
           if (user?.role === "admin") fetchAdminData();
         }
       } catch (e) {}
@@ -294,6 +320,14 @@ export default function Dashboard() {
       if (user.role === "admin") fetchAdminData();
     }
   }, [selectedIndex, user]);
+
+  // 🌐 Global Scanner feed — initial load + periodic poll (WS-fallback)
+  useEffect(() => {
+    if (!user) return;
+    fetchGlobalSignalsLog();
+    const interval = setInterval(fetchGlobalSignalsLog, 30000);
+    return () => clearInterval(interval);
+  }, [user]);
 
   // 🔌 Login hote hi saare 4 indices (NIFTY, BANKNIFTY, SENSEX, FINNIFTY) ke WebSocket
   // connections permanently khol do — ticker strip aur open positions (kisi bhi index ki ho)
@@ -323,8 +357,12 @@ export default function Dashboard() {
         setActiveSignal(res.data.data);
         setExecutedTradeSignalId(null); // naya signal — purana execute-lock reset
         fetchSignalsLog();
+      } else {
+        // Backend ne explicitly fail bola — silent rehne ke bajaye user ko batao
+        alert(`⚠️ ${res.data?.message || "Signal generate nahi ho paya. Dubara try karein."}`);
       }
     } catch (e) {
+      alert("⚠️ Network/server error — thodi der baad dubara try karein.");
     } finally {
       setLoadingDecode(false);
     }
@@ -666,29 +704,136 @@ export default function Dashboard() {
               ))}
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-2xl">
-                <p className="text-xs text-slate-400 mb-1">
-                  {selectedIndex} SPOT
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              <div className="bg-slate-900/60 border border-slate-800 p-2.5 rounded-xl">
+                <p className="text-[9px] text-slate-500 uppercase mb-0.5 truncate">
+                  {selectedIndex} Spot
                 </p>
-                <p className="text-2xl font-extrabold text-cyan-400">
-                  ₹
-                  {liveSpot > 0
-                    ? liveSpot.toLocaleString("en-IN")
-                    : "Loading..."}
+                <p className="text-sm md:text-lg font-extrabold text-cyan-400 truncate">
+                  ₹{liveSpot > 0 ? liveSpot.toLocaleString("en-IN") : "..."}
                 </p>
               </div>
-              <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-2xl">
-                <p className="text-xs text-slate-400 mb-1">PCR SENTIMENT</p>
-                <p className="text-2xl font-bold text-indigo-400">{pcr}</p>
+              <div className="bg-slate-900/60 border border-slate-800 p-2.5 rounded-xl">
+                <p className="text-[9px] text-slate-500 uppercase mb-0.5">
+                  PCR
+                </p>
+                <p className="text-sm md:text-lg font-bold text-indigo-400">
+                  {pcr}
+                </p>
               </div>
-              <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-2xl">
-                <p className="text-xs text-slate-400 mb-1">MARKET REGIME</p>
-                <p className="text-xl font-bold text-emerald-400">{regime}</p>
+              <div className="bg-slate-900/60 border border-slate-800 p-2.5 rounded-xl">
+                <p className="text-[9px] text-slate-500 uppercase mb-0.5">
+                  Regime
+                </p>
+                <p className="text-xs md:text-base font-bold text-emerald-400 truncate">
+                  {regime}
+                </p>
               </div>
-              <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-2xl">
-                <p className="text-xs text-slate-400 mb-1">INDIA VIX</p>
-                <p className="text-2xl font-bold text-amber-400">13.5</p>
+            </div>
+
+            {/* 🌐 Global AI Scanner */}
+            <style>{`
+              @keyframes premiumScan {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+              }
+            `}</style>
+            <div className="bg-gradient-to-br from-indigo-950/50 via-slate-900/80 to-slate-900/80 border border-indigo-500/30 rounded-3xl p-4 md:p-6 mb-6 shadow-lg shadow-indigo-950/30">
+              <div className="flex items-center justify-between mb-3 md:mb-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center shrink-0">
+                     <Radar
+                      className={`w-4 h-4 md:w-5 md:h-5 ${marketOpen ? "text-indigo-400" : "text-slate-600"}`}
+                      style={{
+                        animation: marketOpen
+                          ? "premiumScan 3s linear infinite"
+                          : "none",
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <h2 className="text-sm md:text-lg font-bold text-slate-100">
+                      Global AI Scanner
+                    </h2>
+                    <p className="text-[9px] md:text-xs text-slate-400">
+                      {marketOpen
+                        ? "Live scanning NIFTY, BANKNIFTY, SENSEX, FINNIFTY..."
+                        : "Market band hai — scanning paused"}
+                    </p>
+                  </div>
+                </div>
+                <span
+                  className={`px-2 md:px-2.5 py-1 rounded-full text-[9px] md:text-[10px] font-bold whitespace-nowrap ${
+                    marketOpen
+                      ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+                      : "bg-slate-800 text-slate-500 border border-slate-700"
+                  }`}
+                >
+                  {marketOpen ? "● LIVE" : "○ PAUSED"}
+                </span>
+              </div>
+
+              <div className="max-h-[360px] overflow-y-auto space-y-2 pr-1">
+                {globalSignals.length > 0 ? (
+                  globalSignals.map((sig, idx) => (
+                    <div
+                      key={sig._id || idx}
+                      className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3 flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 md:gap-2 mb-1 flex-wrap">
+                          <span className="text-[10px] md:text-xs font-bold text-slate-200">
+                            {sig.index_name}
+                          </span>
+                          <span
+                            className={`text-[10px] md:text-xs font-bold ${sig.signal === "BUY CALL" ? "text-emerald-400" : "text-red-400"}`}
+                          >
+                            {sig.signal}
+                          </span>
+                          <span className="text-[10px] md:text-xs text-slate-400">
+                            {sig.strike}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 md:gap-3 text-[9px] md:text-[10px] text-slate-500 flex-wrap">
+                          <span>
+                            Entry{" "}
+                            <b className="text-cyan-400">
+                              ₹{sig.entry_price}
+                            </b>
+                          </span>
+                          <span>
+                            SL <b className="text-red-400">₹{sig.stop_loss}</b>
+                          </span>
+                          <span>
+                            Target{" "}
+                            <b className="text-emerald-400">
+                              ₹{sig.shz_upper}
+                            </b>
+                          </span>
+                        </div>
+                      </div>
+                      <span
+                        className={`px-2 py-0.5 rounded text-[9px] md:text-[10px] font-bold whitespace-nowrap shrink-0 ${
+                          sig.status === "TARGET_HIT"
+                            ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+                            : sig.status === "SL_HIT"
+                              ? "bg-red-500/20 text-red-400 border border-red-500/40"
+                              : sig.status === "EXPIRED"
+                                ? "bg-amber-500/20 text-amber-400 border border-amber-500/40"
+                                : "bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 animate-pulse"
+                        }`}
+                      >
+                        {sig.status}
+                      </span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-8 text-[10px] md:text-xs text-slate-500">
+                    {marketOpen
+                      ? "AI scanning jaari hai... abhi tak koi high-confluence setup nahi mila."
+                      : "Market khulne par yahan live signals dikhna shuru honge."}
+                  </div>
+                )}
               </div>
             </div>
 

@@ -66,6 +66,32 @@ def _register_index_token_map(oc: Dict[str, Any], index_name: str):
         register_token_index_mapping(token_map)
 
 
+async def _get_option_chain_cached(db, index_name: str, idx_config: Dict[str, Any]):
+    """
+    Reads the latest option-chain snapshot that the background Global Market
+    Scanner saves every ~20 seconds. Falls back to a live Dhan call only if no
+    fresh-enough snapshot exists (e.g. scanner just started). This means
+    DECODE/FORCED SCALP no longer need to hit Dhan on every single click.
+    """
+    snapshot = await db.market_snapshots.find_one({"index_name": index_name})
+    if snapshot:
+        age_seconds = (datetime.utcnow() - snapshot["updated_at"]).total_seconds()
+        if age_seconds < 60 and snapshot.get("oc") and snapshot.get("spot", 0) > 0:
+            return snapshot["spot"], snapshot["oc"], snapshot.get("expiry")
+
+    expiry = await get_or_fetch_expiry(index_name)
+    if not expiry:
+        return 0.0, {}, None
+    raw_oc = await fetch_full_option_chain_data(
+        scrip_id=idx_config["scrip_id"], segment=idx_config["underlying_seg"], expiry=expiry
+    )
+    if not raw_oc:
+        return 0.0, {}, expiry
+    spot = float(raw_oc.get("last_price") or raw_oc.get("underlyingPrice") or 0.0)
+    oc = raw_oc.get("oc", {})
+    return spot, oc, expiry
+
+
 @router.post("/decode")
 async def decode_market_signal(
     payload: DecodeRequest,
@@ -87,24 +113,10 @@ async def decode_market_signal(
             }
         }
 
-    expiry = await get_or_fetch_expiry(index_name)
-    if not expiry:
-        return {"success": False, "message": f"No active expiry found for {index_name}"}
-
-    raw_oc = await fetch_full_option_chain_data(
-        scrip_id=idx_config["scrip_id"],
-        segment=idx_config["underlying_seg"],
-        expiry=expiry
-    )
-
-    if not raw_oc:
-        return {"success": False, "message": "Dhan API busy or rate limit reached. Please try again."}
-
-    spot = float(raw_oc.get("last_price") or raw_oc.get("underlyingPrice") or 0.0)
-    oc = raw_oc.get("oc", {})
+    spot, oc, expiry = await _get_option_chain_cached(db, index_name, idx_config)
 
     if spot <= 0 or not oc:
-        return {"success": False, "message": "Incomplete option chain data received from Dhan."}
+        return {"success": False, "message": "Market data temporarily unavailable. Please try again."}
 
     _register_index_token_map(oc, index_name)
 
@@ -260,20 +272,10 @@ async def decode_force_scalp(
                 }
             }
 
-        expiry = await get_or_fetch_expiry(index_name)
-        if not expiry:
-            return {"success": False, "message": f"No active expiry found for {index_name}"}
-
-        raw_oc = await fetch_full_option_chain_data(idx_config["scrip_id"], idx_config["underlying_seg"], expiry)
-
-        if not raw_oc:
-            return {"success": False, "message": "Option chain data currently unavailable from Dhan."}
-
-        spot = float(raw_oc.get("last_price") or raw_oc.get("underlyingPrice") or 0.0)
-        oc = raw_oc.get("oc", {})
+        spot, oc, expiry = await _get_option_chain_cached(db, index_name, idx_config)
 
         if spot <= 0 or not oc:
-            return {"success": False, "message": "Incomplete market data for forced scalp."}
+            return {"success": False, "message": "Market data temporarily unavailable. Please try again."}
 
         _register_index_token_map(oc, index_name)
 
@@ -377,7 +379,7 @@ async def decode_force_scalp(
             "security_id": security_id,
             "status": "ACTIVE",
             "created_at": datetime.utcnow()
-       }
+        }
 
         res = await db.signals.insert_one(signal_doc)
         signal_id = str(res.inserted_id)
@@ -425,6 +427,29 @@ async def get_signals_log(
         signals.append(doc)
 
     return {"success": True, "count": len(signals), "logs": signals}
+
+
+@router.get("/global-signals-log")
+async def get_global_signals_log(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """Feed of signals from the background Global Market Scanner — shown on
+    every user's dashboard automatically, without needing a manual click."""
+    from app.services.market_scanner import GLOBAL_SIGNAL_USER_ID
+
+    market_status = get_market_status()
+
+    cursor = db.signals.find({"user_id": GLOBAL_SIGNAL_USER_ID}).sort("created_at", -1).limit(20)
+
+    logs = []
+    async for doc in cursor:
+        doc["_id"] = str(doc["_id"])
+        if doc.get("created_at"):
+            doc["created_at"] = doc["created_at"].isoformat()
+        logs.append(doc)
+
+    return {"success": True, "is_market_open": market_status["is_open"], "logs": logs}
 
 
 @router.post("/live-ltp-batch")
@@ -531,9 +556,6 @@ async def get_overall_accuracy_stats(
     decided_signals = total_target_hit + total_sl_hit
     win_rate = round((total_target_hit / decided_signals) * 100, 1) if decided_signals > 0 else 0.0
 
-    # 📊 Mode-wise breakdown — Standard Signal has strict confluence gates (ORB+PCR+Momentum),
-    # Forced Scalp is an intentional override with NO gates. Blending them hides whether
-    # low accuracy comes from genuine AI judgement (Standard) or ungated manual overrides (Scalp).
     async def _mode_stats(breakout_status: str):
         t_hit = await db.signals.count_documents({**date_filter, "status": "TARGET_HIT", "breakout_status": breakout_status})
         s_hit = await db.signals.count_documents({**date_filter, "status": "SL_HIT", "breakout_status": breakout_status})
