@@ -121,6 +121,18 @@ async def root_health_check():
     }
 
 
+@app.get("/api/v1/maintenance-status", tags=["Health Check"])
+async def get_maintenance_status():
+    """
+    Reads the MAINTENANCE_MODE environment variable on Render — toggle it in the
+    Render dashboard (no code change / redeploy needed) to show/hide the
+    full-screen maintenance banner on the frontend.
+    """
+    import os
+    is_maintenance = os.environ.get("MAINTENANCE_MODE", "false").strip().lower() in ("true", "1", "yes")
+    return {"maintenance": is_maintenance}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

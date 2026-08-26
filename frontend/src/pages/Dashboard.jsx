@@ -35,6 +35,25 @@ const WS_BASE_URL = isLocal
 
 export default function Dashboard() {
   const { user, serverWakingUp, loginWithGoogleToken, logout } = useAuth();
+
+// REPLACE WITH:
+export default function Dashboard() {
+  const { user, serverWakingUp, loginWithGoogleToken, logout } = useAuth();
+
+  // 🔧 Maintenance Mode — controlled entirely from Render's environment variable
+  // (MAINTENANCE_MODE=true/false), no code change or redeploy needed to toggle.
+  const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const [checkedMaintenance, setCheckedMaintenance] = useState(false);
+
+  useEffect(() => {
+    axios
+      .get(`${BACKEND_HOST}/api/v1/maintenance-status`)
+      .then((res) => {
+        setMaintenanceMode(!!res.data?.maintenance);
+      })
+      .catch(() => {})
+      .finally(() => setCheckedMaintenance(true));
+  }, []);
   const [activeTab, setActiveTab] = useState(() => {
     try {
       return localStorage.getItem("optionsaathi_active_tab") || "TRADING";
@@ -529,6 +548,23 @@ export default function Dashboard() {
   const totalUnrealizedPnl = paperPositions
     .filter((p) => p.status === "OPEN")
     .reduce((acc, p) => acc + getLivePositionMetrics(p).pnl, 0);
+
+  if (checkedMaintenance && maintenanceMode) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-20 h-20 rounded-3xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mb-6">
+          <span className="text-4xl">🔧</span>
+        </div>
+        <h1 className="text-2xl md:text-3xl font-bold text-slate-100 mb-3">
+          Site Maintenance
+        </h1>
+        <p className="text-sm md:text-base text-slate-400 max-w-md">
+          Hum kuch naye features test aur improve kar rahe hain. OptionSaathi
+          jaldi hi wapas aayega — dhanyawad aapke sabr ke liye!
+        </p>
+      </div>
+    );
+  }
 
   if (serverWakingUp) {
     return (
