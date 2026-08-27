@@ -33,8 +33,7 @@ const WS_BASE_URL = isLocal
   ? "ws://localhost:8000"
   : "wss://optionsathitool.onrender.com";
 
-export default function Dashboard() {
-  const { user, serverWakingUp, loginWithGoogleToken, logout } = useAuth();
+
 
 // REPLACE WITH:
 export default function Dashboard() {
