@@ -64,12 +64,20 @@ def _update_candle_and_orb(index_name: str, ltp: float, ist_now: datetime):
     cur = _current_candle.get(index_name)
     if cur is None or cur["minute"] != minute_key:
         if cur is not None:
-            index_candle_store[index_name].append({
+            finalized_candle = {
                 "minute": cur["minute"], "open": cur["open"],
                 "high": cur["high"], "low": cur["low"], "close": cur["close"]
-            })
+            }
+            index_candle_store[index_name].append(finalized_candle)
             if len(index_candle_store[index_name]) > MAX_CANDLES_STORED:
                 index_candle_store[index_name] = index_candle_store[index_name][-MAX_CANDLES_STORED:]
+
+            # 💾 Also persist to MongoDB (full-day history) — needed by strategies
+            # like VWAP/Bollinger Bands that need more than the 30-min rolling window.
+            import asyncio
+            from app.services.candle_storage import persist_finalized_candle
+            asyncio.create_task(persist_finalized_candle(index_name, finalized_candle))
+
         _current_candle[index_name] = {"minute": minute_key, "open": ltp, "high": ltp, "low": ltp, "close": ltp}
     else:
         cur["high"] = max(cur["high"], ltp)

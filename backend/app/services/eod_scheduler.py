@@ -178,10 +178,18 @@ async def eod_auto_square_off_loop():
                 await _eod_close_paper_trades(db, today_filter)
                 await _eod_close_signals(db, today_filter)
 
-                # 🧹 Clear cached option-chain snapshots after market close — next
+               # 🧹 Clear cached option-chain snapshots after market close — next
                 # day's data is completely different (new strikes/expiry context),
                 # so yesterday's snapshot is worthless and just wastes storage.
                 await db.market_snapshots.delete_many({})
+
+                  # 📸 Snapshot today's final candle close (per index) BEFORE cleanup —
+                # tomorrow's Gap-Fill Fader strategy needs this to compute the gap.
+                from app.services.candle_storage import snapshot_previous_close, cleanup_old_candles
+                await snapshot_previous_close(db)
+
+                # 🧹 Clear old intraday candle history — only today's is ever needed.
+                await cleanup_old_candles(db)
 
         except asyncio.CancelledError:
             logger.info("⏱️ EOD Auto Square-Off Scheduler stopped.")
