@@ -25,9 +25,17 @@ async def auto_execute_for_all_users(db, signal_doc: Dict[str, Any], source: str
     a user does not need to be online for this to work, and failures for one
     user never block others (wrapped per-user in try/except).
 
-    source: "GLOBAL_SCAN" or "CANDLE_SCALP" — each has its own independent
-    enable-toggle, lot size, daily-loss cap and daily-trade cap per user.
+    source: ONLY "GLOBAL_SCAN" or "CANDLE_SCALP" trigger auto-execution — these
+    are the only two sources with a dedicated opt-in toggle in the settings UI.
+    Any other source (e.g. STRAT_* from the multi-strategy engine, which has NO
+    opt-in toggle yet) must NEVER auto-execute — this was previously a bug: any
+    non-"GLOBAL_SCAN" source silently fell into the "candle_scalp" bucket, so a
+    user who had candle_scalp_enabled=True got EVERY strategy-engine signal
+    auto-traded into their paper account without ever opting into strategies.
     """
+    if source not in ("GLOBAL_SCAN", "CANDLE_SCALP"):
+        return
+
     field_prefix = "global_scan" if source == "GLOBAL_SCAN" else "candle_scalp"
     enabled_field = f"{field_prefix}_enabled"
 

@@ -92,6 +92,15 @@ async def _get_option_chain_cached(db, index_name: str, idx_config: Dict[str, An
     return spot, oc, expiry
 
 
+def _ist_days_ago_start_utc(days: int) -> datetime:
+    """Returns the UTC-equivalent timestamp for the start of IST-midnight,
+    `days` calendar days ago (days=1 means today's midnight)."""
+    ist_offset = timedelta(hours=5, minutes=30)
+    ist_now = datetime.utcnow() + ist_offset
+    start = datetime(ist_now.year, ist_now.month, ist_now.day) - timedelta(days=days - 1)
+    return start - ist_offset
+
+
 @router.post("/decode")
 async def decode_market_signal(
     payload: DecodeRequest,
@@ -434,13 +443,42 @@ async def get_global_signals_log(
     current_user: Dict[str, Any] = Depends(get_current_user),
     db=Depends(get_database)
 ):
-    """Feed of signals from the background Global Market Scanner — shown on
-    every user's dashboard automatically, without needing a manual click."""
+    """Feed of the last 7 days of signals from the background Global Market
+    Scanner — frontend groups these by date (today expanded, older collapsed)."""
     from app.services.market_scanner import GLOBAL_SIGNAL_USER_ID
 
     market_status = get_market_status()
+    window_start = _ist_days_ago_start_utc(7)
 
-    cursor = db.signals.find({"user_id": GLOBAL_SIGNAL_USER_ID}).sort("created_at", -1).limit(20)
+    cursor = db.signals.find({
+        "user_id": GLOBAL_SIGNAL_USER_ID,
+        "created_at": {"$gte": window_start}
+    }).sort("created_at", -1).limit(150)
+
+    logs = []
+    async for doc in cursor:
+        doc["_id"] = str(doc["_id"])
+        if doc.get("created_at"):
+            doc["created_at"] = doc["created_at"].isoformat()
+        logs.append(doc)
+
+    return {"success": True, "is_market_open": market_status["is_open"], "logs": logs}
+
+
+@router.get("/strategy-signals-log")
+async def get_strategy_signals_log(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """Feed of the last 7 days of signals from the multi-strategy engine
+    (strategy_engine.py) — frontend groups by date, today expanded by default."""
+    market_status = get_market_status()
+    window_start = _ist_days_ago_start_utc(7)
+
+    cursor = db.signals.find({
+        "user_id": "SYSTEM_STRATEGY_ENGINE",
+        "created_at": {"$gte": window_start}
+    }).sort("created_at", -1).limit(200)
 
     logs = []
     async for doc in cursor:
@@ -587,6 +625,55 @@ async def get_overall_accuracy_stats(
             "forced_scalp": scalp_stats
         }
     }
+
+
+STRATEGY_NICKNAMES = {
+    "GLOBAL_SCAN": "Global AI Scanner",
+    "FORCED_SCALP": "Forced Scalp",
+    "CONFLUENCE_DECODE": "Standard Signal",
+    "CANDLE_SCALP": "Candle Scalp",
+    "STRAT_VWAP_BOUNCER": "VWAP Bouncer",
+    "STRAT_BOLLINGER_SQUEEZE": "Bollinger Squeeze",
+    "STRAT_RSI_REVERSAL": "RSI Reversal",
+    "STRAT_SR_BOUNCE": "Support-Resistance Bounce",
+    "STRAT_GAP_FILL_FADER": "Gap-Fill Fader",
+    "STRAT_MA_CROSSOVER": "MA Crossover",
+    "STRAT_OI_BUILDUP": "OI Buildup Tracker",
+    "STRAT_VOLUME_SPIKE": "Volume Spike Momentum",
+    "STRAT_DOJI_REVERSAL": "Doji Reversal",
+    "STRAT_MULTI_TIMEFRAME": "Multi-Timeframe Confluence",
+    "STRAT_IV_CONTRACTION": "IV Contraction Entry",
+}
+
+
+@router.get("/admin/strategy-leaderboard")
+async def get_strategy_leaderboard(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """Cumulative (all-time) win-rate per signal-source — every STRAT_* strategy,
+    plus Global Scan / Forced Scalp / Standard / Candle Scalp — so it's obvious
+    which strategies are genuinely working, without mixing them together."""
+    statuses = await db.signals.distinct("breakout_status")
+    results = []
+    for status in statuses:
+        if not status:
+            continue
+        t_hit = await db.signals.count_documents({"breakout_status": status, "status": "TARGET_HIT"})
+        s_hit = await db.signals.count_documents({"breakout_status": status, "status": "SL_HIT"})
+        decided = t_hit + s_hit
+        win_rate = round((t_hit / decided) * 100, 1) if decided > 0 else 0.0
+        results.append({
+            "key": status,
+            "nickname": STRATEGY_NICKNAMES.get(status, status.replace("STRAT_", "").replace("_", " ").title()),
+            "target_hit": t_hit,
+            "sl_hit": s_hit,
+            "decided": decided,
+            "win_rate_percentage": win_rate
+        })
+
+    results.sort(key=lambda r: (-r["decided"], -r["win_rate_percentage"]))
+    return {"success": True, "strategies": results}
 
 
 @router.post("/admin/reset-accuracy-tracking")

@@ -21,7 +21,7 @@ from app.services.feature_logger import log_signal_features
 logger = logging.getLogger(__name__)
 
 SCAN_INTERVAL_SECONDS = 20
-SCANNED_INDICES = ["NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY"]
+SCANNED_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
 GLOBAL_SIGNAL_USER_ID = "SYSTEM_GLOBAL_SCANNER"
 COOLDOWN_MINUTES = 5
 

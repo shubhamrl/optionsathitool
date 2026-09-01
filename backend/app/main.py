@@ -10,6 +10,8 @@ from app.core.database import connect_to_mongo, close_mongo_connection
 from app.services.dhan_websocket import dhan_ws_client
 from app.services.eod_scheduler import eod_auto_square_off_loop
 from app.services.market_scanner import global_market_scanner_loop
+from app.services.strategy_engine import strategy_engine_loop
+from app.services.strategies import batch1, batch2, batch3  # noqa: F401 — import registers strategies via decorators/calls
 from app.api.v1.endpoints import signals, market_data, auth
 from app.api.v1.endpoints import paper_trade
 from app.api.v1.endpoints.market_data import ws_manager
@@ -60,6 +62,10 @@ async def lifespan(app: FastAPI):
     scanner_task = asyncio.create_task(global_market_scanner_loop(broadcast_callback=global_broadcast))
     logger.info("🌐 Global Market Scanner Task Initialized in Background.")
 
+    # Spawn Strategy Engine (pluggable multi-strategy scanner — see strategy_engine.py)
+    strategy_task = asyncio.create_task(strategy_engine_loop(broadcast_callback=global_broadcast))
+    logger.info("🎯 Strategy Engine Task Initialized in Background.")
+
     yield  # Application Runs Here
 
     # 2. Shutdown Actions
@@ -67,6 +73,7 @@ async def lifespan(app: FastAPI):
     ws_task.cancel()
     eod_task.cancel()
     scanner_task.cancel()
+    strategy_task.cancel()
     await close_mongo_connection()
     logger.info("✅ Graceful Shutdown Complete.")
 
