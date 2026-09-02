@@ -189,6 +189,7 @@ export default function Dashboard() {
       );
       if (res.data && res.data.success) {
         setStrategySignals(res.data.logs || []);
+        setMarketOpen(res.data.is_market_open);
       }
     } catch (e) {}
   };
@@ -200,6 +201,26 @@ export default function Dashboard() {
       );
       if (res.data && res.data.success) {
         setStrategyLeaderboard(res.data.strategies || []);
+      }
+    } catch (e) {}
+  };
+
+  const [dailyPerformance, setDailyPerformance] = useState([]);
+  const [showDailyPerformance, setShowDailyPerformance] = useState(false);
+  const [expandedPerfDates, setExpandedPerfDates] = useState({});
+
+  const isPerfDateExpanded = (idx) =>
+    idx === 0 ? expandedPerfDates[idx] !== false : !!expandedPerfDates[idx];
+  const togglePerfDateExpand = (idx) =>
+    setExpandedPerfDates((prev) => ({ ...prev, [idx]: !isPerfDateExpanded(idx) }));
+
+  const fetchDailyPerformance = async () => {
+    try {
+      const res = await axios.get(
+        `${API_BASE_URL}/signals/admin/strategy-leaderboard-daily`,
+      );
+      if (res.data && res.data.success) {
+        setDailyPerformance(res.data.days || []);
       }
     } catch (e) {}
   };
@@ -885,147 +906,18 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* 🌐 Global AI Scanner */}
+            {/* 🎯 Multi-Strategy Engine (12 strategies, ORB Breaker included) */}
             <style>{`
               @keyframes premiumScan {
                 0% { transform: rotate(0deg); }
                 100% { transform: rotate(360deg); }
               }
             `}</style>
-            <div className="bg-gradient-to-br from-indigo-950/50 via-slate-900/80 to-slate-900/80 border border-indigo-500/30 rounded-3xl p-4 md:p-6 mb-6 shadow-lg shadow-indigo-950/30">
-              <div className="flex items-center justify-between mb-3 md:mb-4">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center shrink-0">
-                     <Radar
-                      className={`w-4 h-4 md:w-5 md:h-5 ${marketOpen ? "text-indigo-400" : "text-slate-600"}`}
-                      style={{
-                        animation: marketOpen
-                          ? "premiumScan 3s linear infinite"
-                          : "none",
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <h2 className="text-sm md:text-lg font-bold text-slate-100">
-                      Global AI Scanner
-                    </h2>
-                    <p className="text-[9px] md:text-xs text-slate-400">
-                      {marketOpen
-                        ? "Live scanning NIFTY, BANKNIFTY, SENSEX, FINNIFTY..."
-                        : "Market band hai — scanning paused"}
-                    </p>
-                  </div>
-                </div>
-                <span
-                  className={`px-2 md:px-2.5 py-1 rounded-full text-[9px] md:text-[10px] font-bold whitespace-nowrap ${
-                    marketOpen
-                      ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
-                      : "bg-slate-800 text-slate-500 border border-slate-700"
-                  }`}
-                >
-                  {marketOpen ? "● LIVE" : "○ PAUSED"}
-                </span>
-              </div>
-
-              <div className="max-h-[360px] overflow-y-auto space-y-1.5 pr-1">
-                {globalSignals.length > 0 ? (
-                  sortDateKeysDesc(groupSignalsByDate(globalSignals)).map(
-                    (dateKey) => {
-                      const dayList = groupSignalsByDate(globalSignals)[dateKey];
-                      const expanded = isGlobalDateExpanded(dateKey);
-                      return (
-                        <div key={dateKey}>
-                          <div
-                            onClick={() => toggleGlobalDateExpand(dateKey)}
-                            className="flex items-center justify-between bg-slate-900/70 rounded-xl px-2.5 py-1.5 cursor-pointer hover:bg-slate-800/60 transition-all"
-                          >
-                            <span className="text-[10px] font-bold text-slate-300 flex items-center gap-1.5">
-                              <span className="text-slate-500">
-                                {expanded ? "▾" : "▸"}
-                              </span>
-                              {formatDateKey(dateKey)}
-                              <span className="text-slate-600">
-                                ({dayList.length})
-                              </span>
-                            </span>
-                          </div>
-                          {expanded &&
-                            dayList.map((sig, idx) => (
-                              <div
-                                key={sig._id || idx}
-                                className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3 mt-1.5 flex items-center justify-between gap-2"
-                              >
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-1.5 md:gap-2 mb-1 flex-wrap">
-                                    <span className="text-[10px] md:text-xs font-bold text-slate-200">
-                                      {sig.index_name}
-                                    </span>
-                                    <span
-                                      className={`text-[10px] md:text-xs font-bold ${sig.signal === "BUY CALL" ? "text-emerald-400" : "text-red-400"}`}
-                                    >
-                                      {sig.signal}
-                                    </span>
-                                    <span className="text-[10px] md:text-xs text-slate-400">
-                                      {sig.strike}
-                                    </span>
-                                    <WinRateBadge breakoutStatus={sig.breakout_status} />
-                                  </div>
-                                  <div className="flex items-center gap-2 md:gap-3 text-[9px] md:text-[10px] text-slate-500 flex-wrap">
-                                    <span>
-                                      Entry{" "}
-                                      <b className="text-cyan-400">
-                                        ₹{sig.entry_price}
-                                      </b>
-                                    </span>
-                                    <span>
-                                      SL{" "}
-                                      <b className="text-red-400">
-                                        ₹{sig.stop_loss}
-                                      </b>
-                                    </span>
-                                    <span>
-                                      Target{" "}
-                                      <b className="text-emerald-400">
-                                        ₹{sig.shz_upper}
-                                      </b>
-                                    </span>
-                                  </div>
-                                </div>
-                                <span
-                                  className={`px-2 py-0.5 rounded text-[9px] md:text-[10px] font-bold whitespace-nowrap shrink-0 ${
-                                    sig.status === "TARGET_HIT"
-                                      ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
-                                      : sig.status === "SL_HIT"
-                                        ? "bg-red-500/20 text-red-400 border border-red-500/40"
-                                        : sig.status === "EXPIRED"
-                                          ? "bg-amber-500/20 text-amber-400 border border-amber-500/40"
-                                          : "bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 animate-pulse"
-                                  }`}
-                                >
-                                  {sig.status}
-                                </span>
-                              </div>
-                            ))}
-                        </div>
-                      );
-                    },
-                  )
-                ) : (
-                  <div className="text-center py-8 text-[10px] md:text-xs text-slate-500">
-                    {marketOpen
-                      ? "AI scanning jaari hai... abhi tak koi high-confluence setup nahi mila."
-                      : "Market khulne par yahan live signals dikhna shuru honge."}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* 🎯 Multi-Strategy Engine */}
             <div className="bg-gradient-to-br from-emerald-950/40 via-slate-900/80 to-slate-900/80 border border-emerald-500/30 rounded-3xl p-4 md:p-6 mb-6 shadow-lg shadow-emerald-950/20">
               <div className="flex items-center justify-between mb-3 md:mb-4">
                 <div className="flex items-center gap-2.5">
                   <div className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center shrink-0">
-                    <Activity
+                    <Radar
                       className={`w-4 h-4 md:w-5 md:h-5 ${marketOpen ? "text-emerald-400" : "text-slate-600"}`}
                       style={{
                         animation: marketOpen
@@ -1040,7 +932,7 @@ export default function Dashboard() {
                     </h2>
                     <p className="text-[9px] md:text-xs text-slate-400">
                       {marketOpen
-                        ? "11 strategies live scanning together..."
+                        ? "12 strategies live scanning together..."
                         : "Market band hai — scanning paused"}
                     </p>
                   </div>
@@ -1629,16 +1521,16 @@ export default function Dashboard() {
         {activeTab === "ADMIN" && (
           <div className="space-y-6">
             {/* Toggle buttons for the two big collapsible sections */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <button
                 onClick={() => setShowAccuracyDetails((v) => !v)}
                 className="bg-indigo-950/30 border border-indigo-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-indigo-950/50 transition-all"
               >
                 <span className="text-sm font-bold text-indigo-300 flex items-center gap-2">
-                  <Target className="w-4 h-4" /> Live Accuracy Verification
+                  <Target className="w-4 h-4" /> Live Accuracy
                 </span>
                 <span className="text-xs text-slate-500">
-                  {showAccuracyDetails ? "▾ Hide" : "▸ Show"}
+                  {showAccuracyDetails ? "▾" : "▸"}
                 </span>
               </button>
               <button
@@ -1646,13 +1538,101 @@ export default function Dashboard() {
                 className="bg-emerald-950/30 border border-emerald-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-emerald-950/50 transition-all"
               >
                 <span className="text-sm font-bold text-emerald-300 flex items-center gap-2">
-                  🏆 Strategy Leaderboard
+                  🏆 All-Time Leaderboard
                 </span>
                 <span className="text-xs text-slate-500">
-                  {showStrategyLeaderboard ? "▾ Hide" : "▸ Show"}
+                  {showStrategyLeaderboard ? "▾" : "▸"}
+                </span>
+              </button>
+              <button
+                onClick={() => {
+                  const next = !showDailyPerformance;
+                  setShowDailyPerformance(next);
+                  if (next) fetchDailyPerformance();
+                }}
+                className="bg-orange-950/30 border border-orange-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-orange-950/50 transition-all"
+              >
+                <span className="text-sm font-bold text-orange-300 flex items-center gap-2">
+                  📅 Daily Performance
+                </span>
+                <span className="text-xs text-slate-500">
+                  {showDailyPerformance ? "▾" : "▸"}
                 </span>
               </button>
             </div>
+
+            {showDailyPerformance && (
+              <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-4 md:p-6 space-y-2">
+                <h3 className="text-sm md:text-base font-bold text-slate-200 mb-2">
+                  📅 Daily Strategy Performance (Last 7 Days)
+                </h3>
+                {dailyPerformance.length > 0 ? (
+                  dailyPerformance.map((day, idx) => {
+                    const expanded = isPerfDateExpanded(idx);
+                    return (
+                      <div key={day.date}>
+                        <div
+                          onClick={() => togglePerfDateExpand(idx)}
+                          className="flex items-center justify-between bg-slate-950/60 rounded-xl px-3 py-2 cursor-pointer hover:bg-slate-800/60 transition-all"
+                        >
+                          <span className="text-xs font-bold text-orange-300 flex items-center gap-1.5">
+                            <span className="text-slate-500">
+                              {expanded ? "▾" : "▸"}
+                            </span>
+                            {day.date}
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            {day.strategies.length} strategies
+                          </span>
+                        </div>
+                        {expanded && (
+                          day.strategies.length > 0 ? (
+                            <div className="overflow-x-auto mt-2 mb-1">
+                              <table className="w-full text-left text-xs text-slate-300 min-w-[450px]">
+                                <thead className="bg-slate-950/60 text-slate-500 border-b border-slate-800 uppercase text-[9px]">
+                                  <tr>
+                                    <th className="p-2">Strategy</th>
+                                    <th className="p-2">Win Rate</th>
+                                    <th className="p-2">Target</th>
+                                    <th className="p-2">SL</th>
+                                    <th className="p-2">Decided</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {day.strategies.map((s) => (
+                                    <tr key={s.key} className="border-b border-slate-800/50">
+                                      <td className="p-2 font-semibold text-slate-200">
+                                        {s.nickname}
+                                      </td>
+                                      <td
+                                        className={`p-2 font-extrabold ${s.win_rate_percentage >= 50 ? "text-emerald-400" : "text-red-400"}`}
+                                      >
+                                        {s.win_rate_percentage}%
+                                      </td>
+                                      <td className="p-2 text-emerald-400">{s.target_hit}</td>
+                                      <td className="p-2 text-red-400">{s.sl_hit}</td>
+                                      <td className="p-2 text-slate-400">{s.decided}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            <p className="text-[10px] text-slate-600 mt-1 mb-1 px-3">
+                              Is din koi trade decide nahi hua.
+                            </p>
+                          )
+                        )}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p className="text-xs text-slate-500 text-center py-4">
+                    Loading...
+                  </p>
+                )}
+              </div>
+            )}
 
             {showStrategyLeaderboard && (
               <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-4 md:p-6">
