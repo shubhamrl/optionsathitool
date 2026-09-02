@@ -10,10 +10,63 @@ from app.engine.confluence_math import calculate_option_greeks
 from app.engine.risk_manager import risk_manager
 from app.services.feature_logger import log_signal_features
 from app.services.auto_trader import auto_execute_for_all_users
+from app.services.token_registry import fetch_expiry_list, fetch_full_option_chain_data
 
 logger = logging.getLogger(__name__)
 
 SCAN_INTERVAL_SECONDS = 25
+_expiry_cache: Dict[str, Dict[str, Any]] = {}
+
+
+async def _get_cached_expiry(index_name: str):
+    idx_config = settings.INDICES_CONFIG.get(index_name, settings.INDICES_CONFIG["NIFTY"])
+    now_ts = datetime.utcnow().timestamp()
+    cached = _expiry_cache.get(index_name)
+    if cached and (now_ts - cached["fetched_at"]) < 3600:
+        return cached["expiry"]
+    expiries = await fetch_expiry_list(idx_config["scrip_id"], idx_config["underlying_seg"])
+    if expiries:
+        _expiry_cache[index_name] = {"expiry": expiries[0], "fetched_at": now_ts}
+        return expiries[0]
+    return None
+
+
+async def _refresh_market_snapshot(db, index_name: str):
+    """
+    🔴 CRITICAL: This duty used to belong to the now-retired standalone
+    market_scanner.py loop. After ORB Breaker was merged into this registry,
+    NOTHING was fetching fresh option-chain data anymore — market_snapshots
+    was going stale/empty, silently starving every strategy (and the DECODE/
+    FORCED SCALP buttons, which also read market_snapshots) of data. Restored
+    here so the Strategy Engine is fully self-sufficient again.
+    """
+    existing = await db.market_snapshots.find_one({"index_name": index_name})
+    if existing:
+        age_seconds = (datetime.utcnow() - existing.get("updated_at", datetime.min)).total_seconds()
+        if age_seconds < 18:
+            return  # still fresh enough, skip re-fetch this cycle
+
+    idx_config = settings.INDICES_CONFIG.get(index_name, settings.INDICES_CONFIG["NIFTY"])
+    expiry = await _get_cached_expiry(index_name)
+    if not expiry:
+        return
+
+    raw_oc = await fetch_full_option_chain_data(
+        scrip_id=idx_config["scrip_id"], segment=idx_config["underlying_seg"], expiry=expiry
+    )
+    if not raw_oc:
+        return
+
+    spot = float(raw_oc.get("last_price") or raw_oc.get("underlyingPrice") or 0.0)
+    oc = raw_oc.get("oc", {})
+    if spot <= 0 or not oc:
+        return
+
+    await db.market_snapshots.update_one(
+        {"index_name": index_name},
+        {"$set": {"index_name": index_name, "expiry": expiry, "spot": spot, "oc": oc, "updated_at": datetime.utcnow()}},
+        upsert=True
+    )
 STRATEGY_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
 STRATEGY_SIGNAL_USER_ID = "SYSTEM_STRATEGY_ENGINE"
 COOLDOWN_MINUTES = 5
@@ -196,6 +249,7 @@ async def strategy_engine_loop(broadcast_callback=None):
             db = await get_database()
 
             for index_name in STRATEGY_INDICES:
+                await _refresh_market_snapshot(db, index_name)
                 context = await _build_context(db, index_name)
                 if not context:
                     continue
