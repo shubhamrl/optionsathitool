@@ -38,15 +38,9 @@ security_id_to_index_map: Dict[str, str] = {}
 active_positions_tracker: Dict[str, List[Dict[str, Any]]] = {}
 subscribed_security_ids: Set[str] = set()
 
-# 🕯️ Rolling 1-minute candle store per index (built live from spot ticks) — used to
-# detect real price-action momentum (e.g. "big green candle followed by a red candle
-# means booking/selling pressure"), which pure PCR/OI snapshots can't see.
 index_candle_store: Dict[str, List[Dict[str, Any]]] = {idx: [] for idx in INDEX_SPOT_TOKENS.values()}
 _current_candle: Dict[str, Dict[str, Any]] = {}
 
-# 📐 Real Opening Range (9:15–9:30 AM IST) high/low per index, per day — replaces the
-# old hardcoded orb_high=0.0 / orb_low=0.0 that made the Standard Signal's ORB trigger
-# permanently dead.
 index_orb_store: Dict[str, Dict[str, Any]] = {
     idx: {"date": None, "orb_high": 0.0, "orb_low": 0.0, "locked": False}
     for idx in INDEX_SPOT_TOKENS.values()
@@ -72,9 +66,6 @@ def _update_candle_and_orb(index_name: str, ltp: float, ist_now: datetime):
             if len(index_candle_store[index_name]) > MAX_CANDLES_STORED:
                 index_candle_store[index_name] = index_candle_store[index_name][-MAX_CANDLES_STORED:]
 
-            # 💾 Also persist to MongoDB (full-day history) — needed by strategies
-            # like VWAP/Bollinger Bands that need more than the 30-min rolling window.
-            import asyncio
             from app.services.candle_storage import persist_finalized_candle
             asyncio.create_task(persist_finalized_candle(index_name, finalized_candle))
 
@@ -103,20 +94,11 @@ def _update_candle_and_orb(index_name: str, ltp: float, ist_now: datetime):
 
 
 def get_orb_levels(index_name: str) -> Dict[str, float]:
-    """Real Opening Range high/low for today, or 0.0/0.0 if not yet built (e.g. before
-    9:30 AM, or on a day the server started after the opening window)."""
     orb = index_orb_store.get(index_name, {})
     return {"orb_high": orb.get("orb_high", 0.0), "orb_low": orb.get("orb_low", 0.0)}
 
 
 def get_price_momentum(index_name: str) -> Dict[str, Any]:
-    """
-    Reads the rolling 1-minute candle history to detect real price-action momentum:
-      1. Reversal pattern: a strong-bodied candle followed by an opposite-colour
-         candle (e.g. big green then red = likely profit-booking/selling pressure).
-      2. Fallback: short-term directional slope over the last few candles.
-    Returns {"bias": "CE"|"PE"|"NEUTRAL", "reason": str}.
-    """
     candles = index_candle_store.get(index_name, [])
     if len(candles) < 2:
         return {"bias": "NEUTRAL", "reason": "Not enough live candle history yet."}
@@ -151,15 +133,20 @@ class DhanWebSocketClient:
         self.reconnect_delay: int = 3
 
     async def connect_and_listen(self, broadcast_callback=None):
+        from app.services.dhan_credentials import get_dhan_credentials
+
         while True:
-            if not settings.DHAN_ACCESS_TOKEN or not settings.DHAN_CLIENT_ID:
+            client_id, access_token = await get_dhan_credentials()
+
+            if not access_token or not client_id:
+                logger.warning("⚠️ No Dhan credentials available yet — retrying in 10s...")
                 await asyncio.sleep(10)
                 continue
 
             ws_url = (
                 f"wss://api-feed.dhan.co?version=2&"
-                f"token={settings.DHAN_ACCESS_TOKEN}&"
-                f"clientId={settings.DHAN_CLIENT_ID}&"
+                f"token={access_token}&"
+                f"clientId={client_id}&"
                 f"authType=2"
             )
 
@@ -301,15 +288,12 @@ class DhanWebSocketClient:
         from bson import ObjectId
         from app.models.paper_trading import calculate_indian_option_charges
 
-        # 🔒 Atomically CLAIM this trade — only proceeds if still OPEN at this exact
-        # instant, preventing double wallet-credit if this races with a manual
-        # square-off or the EOD scheduler closing the same trade.
         trade = await db.paper_trades.find_one_and_update(
             {"_id": ObjectId(trade_id), "status": "OPEN"},
             {"$set": {"status": "CLOSING"}}
         )
         if not trade:
-            return  # Already closed by another path
+            return
 
         user_id = trade["user_id"]
         buy_price = trade["buy_price"]
