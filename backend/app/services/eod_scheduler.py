@@ -13,6 +13,8 @@ EOD_HOUR = 15
 EOD_MINUTE = 15
 NEAR_MISS_THRESHOLD = 0.7  # 70% distance covered towards target/SL counts as "near miss"
 
+_last_daily_cleanup_date = None
+
 
 def _now_ist() -> datetime:
     return datetime.utcnow() + IST_OFFSET
@@ -190,6 +192,17 @@ async def eod_auto_square_off_loop():
 
                 # 🧹 Clear old intraday candle history — only today's is ever needed.
                 await cleanup_old_candles(db)
+
+                # 🧹 CRITICAL: reset in-memory market_data_store / subscribed_security_ids /
+                # active_positions_tracker — these leak memory forever otherwise (see
+                # reset_daily_state() docstring). Guarded to run only ONCE per day even
+                # though this branch executes every 60s after 3:15 PM.
+                global _last_daily_cleanup_date
+                today_str = ist_now.strftime("%Y-%m-%d")
+                if _last_daily_cleanup_date != today_str:
+                    from app.services.dhan_websocket import reset_daily_state
+                    reset_daily_state()
+                    _last_daily_cleanup_date = today_str
 
         except asyncio.CancelledError:
             logger.info("⏱️ EOD Auto Square-Off Scheduler stopped.")
