@@ -569,6 +569,46 @@ export default function Dashboard() {
     return { currentLtp, pnl: grossPnl, isLive: hasLiveTick };
   };
 
+  // 🎯 For scanner-generated signals (not paper trades): live LTP + P&L% while
+  // ACTIVE, and "how far it got" progress-summary once EXPIRED at market close.
+  const getSignalLiveInfo = (sig) => {
+    const entry = sig.entry_price;
+    const target = sig.shz_upper;
+    const sl = sig.stop_loss;
+
+    if (sig.status === "ACTIVE") {
+      const liveLtp = optionLtpStore[sig.security_id];
+      const hasLiveTick = typeof liveLtp === "number" && liveLtp > 0;
+      if (hasLiveTick && entry > 0) {
+        const pnlPct = ((liveLtp - entry) / entry) * 100;
+        return { hasLiveTick, liveLtp, pnlPct };
+      }
+      return { hasLiveTick: false };
+    }
+
+    if (sig.status === "EXPIRED" && typeof sig.exit_ltp === "number") {
+      const exitLtp = sig.exit_ltp;
+      if (exitLtp >= entry) {
+        const range = target - entry;
+        const pct =
+          range > 0 ? Math.min(((exitLtp - entry) / range) * 100, 100) : 0;
+        return {
+          expiredLabel: `Expired — Target ka ${pct.toFixed(0)}% cover kiya tha`,
+          expiredPositive: true,
+        };
+      } else {
+        const range = entry - sl;
+        const pct =
+          range > 0 ? Math.min(((entry - exitLtp) / range) * 100, 100) : 0;
+        return {
+          expiredLabel: `Expired — SL ka ${pct.toFixed(0)}% tak pahunch gaya tha`,
+          expiredPositive: false,
+        };
+      }
+    }
+    return {};
+  };
+
   // 📅 Group paper positions by date (from created_at) — today's group expanded
   // by default, older dates collapsed until the user clicks the date header.
   const todayDateKey = new Date().toISOString().split("T")[0];
@@ -1016,7 +1056,36 @@ export default function Dashboard() {
                                         ₹{sig.shz_upper}
                                       </b>
                                     </span>
+                                    {(() => {
+                                      const info = getSignalLiveInfo(sig);
+                                      if (sig.status === "ACTIVE" && info.hasLiveTick) {
+                                        return (
+                                          <span className="animate-pulse">
+                                            LTP{" "}
+                                            <b className="text-slate-200">
+                                              ₹{info.liveLtp}
+                                            </b>{" "}
+                                            <b className={info.pnlPct >= 0 ? "text-emerald-400" : "text-red-400"}>
+                                              ({info.pnlPct >= 0 ? "+" : ""}
+                                              {info.pnlPct.toFixed(1)}%)
+                                            </b>
+                                          </span>
+                                        );
+                                      }
+                                      return null;
+                                    })()}
                                   </div>
+                                  {sig.status === "EXPIRED" && (() => {
+                                    const info = getSignalLiveInfo(sig);
+                                    if (!info.expiredLabel) return null;
+                                    return (
+                                      <p
+                                        className={`text-[9px] md:text-[10px] mt-1 ${info.expiredPositive ? "text-emerald-500/80" : "text-red-500/80"}`}
+                                      >
+                                        {info.expiredLabel}
+                                      </p>
+                                    );
+                                  })()}
                                 </div>
                                 <span
                                   className={`px-2 py-0.5 rounded text-[9px] md:text-[10px] font-bold whitespace-nowrap shrink-0 ${
