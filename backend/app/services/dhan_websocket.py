@@ -354,6 +354,37 @@ def register_token_index_mapping(token_map: Dict[str, str]):
     security_id_to_index_map.update(token_map)
 
 
+def reset_daily_state():
+    """
+    🧹 CRITICAL memory-leak fix: market_data_store[index][security_id],
+    subscribed_security_ids, and active_positions_tracker all grow FOREVER —
+    every new option contract ever ticked (across 12 strategies × 3 indices,
+    every day) added a permanent entry that was never removed, even after that
+    day's signals were closed at EOD. This is what caused both the earlier
+    bandwidth spike (growing per-second broadcast payload) and this memory-
+    limit crash. Called once daily, right after EOD square-off completes —
+    safe because by then everything is already closed, and tomorrow's fresh
+    signals will naturally re-populate these structures from scratch.
+    """
+    for idx_name in market_data_store.keys():
+        spot = market_data_store[idx_name].get("spot", 0.0)
+        market_data_store[idx_name] = {"spot": spot, "pcr": 1.0, "trend": "NEUTRAL"}
+
+    subscribed_security_ids.clear()
+    active_positions_tracker.clear()
+    security_id_to_index_map.clear()
+    index_candle_store_reset()
+
+    logger.info("🧹 [DAILY CLEANUP] Reset market_data_store, subscribed_security_ids, "
+                "active_positions_tracker, and security_id_to_index_map for tomorrow.")
+
+
+def index_candle_store_reset():
+    for idx_name in list(index_candle_store.keys()):
+        index_candle_store[idx_name] = []
+    _current_candle.clear()
+
+
 def track_active_position_trade(security_id: str, signal_id: str, target: float, sl: float, trade_id: Optional[str] = None):
     sec_id_str = str(security_id)
     if sec_id_str not in active_positions_tracker:
