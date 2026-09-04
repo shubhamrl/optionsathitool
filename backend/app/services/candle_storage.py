@@ -102,11 +102,30 @@ async def get_previous_close(index_name: str) -> Optional[float]:
         return None
 
 
+RETAIN_DAYS = 5  # Kept multi-day (not just today) so 15-min EMA-50 (needs ~750 min
+# = ~2 trading days of history) has enough data. Storage impact is negligible
+# (a few thousand small candle records total).
+
+
 async def cleanup_old_candles(db):
-    """Deletes candle records from before today — called by the EOD scheduler.
-    Keeps storage bounded since 512MB is the whole Atlas free-tier budget."""
+    """Deletes candle records older than RETAIN_DAYS — called by the EOD scheduler."""
     ist_now = datetime.utcnow() + IST_OFFSET
-    today_key = ist_now.strftime("%Y-%m-%d")
-    result = await db[COLLECTION].delete_many({"date": {"$ne": today_key}})
+    cutoff_date = (ist_now - timedelta(days=RETAIN_DAYS - 1)).strftime("%Y-%m-%d")
+    result = await db[COLLECTION].delete_many({"date": {"$lt": cutoff_date}})
     if result.deleted_count:
-        logger.info(f"🧹 Cleaned up {result.deleted_count} old intraday_candles document(s).")
+        logger.info(f"🧹 Cleaned up {result.deleted_count} old intraday_candles document(s) (kept last {RETAIN_DAYS} days).")
+
+
+async def get_recent_days_candles(index_name: str, days: int = RETAIN_DAYS) -> List[List[Dict[str, Any]]]:
+    """Returns a list of day-wise 1-minute candle lists (oldest day first, today
+    last), for strategies (like EMA breakout) that need multi-day history that
+    a single trading day can't provide."""
+    try:
+        db = await _get_db()
+        cursor = db[COLLECTION].find({"index_name": index_name}).sort("date", -1).limit(days)
+        docs = await cursor.to_list(length=days)
+        docs.reverse()  # oldest first
+        return [d.get("candles", []) for d in docs if d.get("candles")]
+    except Exception as e:
+        logger.warning(f"⚠️ Multi-day candle fetch failed for {index_name} (non-critical): {str(e)}")
+        return []
