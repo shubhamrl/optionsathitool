@@ -89,11 +89,42 @@ async def root_health_check():
     }
 
 
+class MaintenanceToggleRequest(BaseModel):
+    enabled: bool
+    admin_key: str
+
 @app.get("/api/v1/maintenance-status", tags=["Health Check"])
 async def get_maintenance_status():
     import os
+    try:
+        from app.core.database import get_database
+        db = await get_database()
+        doc = await db.app_settings.find_one({"_id": "maintenance_mode"})
+        if doc and "enabled" in doc:
+            return {"maintenance": bool(doc["enabled"])}
+    except Exception as e:
+        logger.warning(f"Could not read maintenance mode from DB: {str(e)}")
+
+    # Fallback to env variable if not found in DB
     is_maintenance = os.environ.get("MAINTENANCE_MODE", "false").strip().lower() in ("true", "1", "yes")
     return {"maintenance": is_maintenance}
+
+
+@app.post("/api/v1/admin/toggle-maintenance", tags=["Admin"])
+async def toggle_maintenance_endpoint(payload: MaintenanceToggleRequest):
+    if payload.admin_key != settings.SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    from app.core.database import get_database
+    db = await get_database()
+    await db.app_settings.update_one(
+        {"_id": "maintenance_mode"},
+        {"$set": {"enabled": payload.enabled, "updated_at": datetime.utcnow()}},
+        upsert=True
+    )
+    status_text = "ENABLED (Site Under Maintenance)" if payload.enabled else "DISABLED (Site Live)"
+    logger.info(f"🔧 Maintenance mode {status_text}")
+    return {"success": True, "maintenance": payload.enabled, "message": f"Maintenance mode {status_text}"}
 
 
 class DhanCredentialsUpdate(BaseModel):
