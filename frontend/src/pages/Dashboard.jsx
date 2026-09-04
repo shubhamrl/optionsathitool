@@ -33,8 +33,6 @@ const WS_BASE_URL = isLocal
   ? "ws://localhost:8000"
   : "wss://optionsathitool.onrender.com";
 
-
-
 // REPLACE WITH:
 export default function Dashboard() {
   const { user, serverWakingUp, loginWithGoogleToken, logout } = useAuth();
@@ -80,6 +78,9 @@ export default function Dashboard() {
   // older days collapsed) — separate expand-state per card so they don't clash.
   const [expandedGlobalDates, setExpandedGlobalDates] = useState({});
   const [expandedStrategyDates, setExpandedStrategyDates] = useState({});
+  const [todayLeaderboard, setTodayLeaderboard] = useState([]);
+  const [executedScannerSignalIds, setExecutedScannerSignalIds] = useState([]);
+  const [strategyToggles, setStrategyToggles] = useState([]);
 
   // 📊 ADMIN tab: Accuracy details & Strategy Leaderboard are hidden by default,
   // opened only on click, to keep the ADMIN tab compact.
@@ -172,9 +173,7 @@ export default function Dashboard() {
 
   const fetchGlobalSignalsLog = async () => {
     try {
-      const res = await axios.get(
-        `${API_BASE_URL}/signals/global-signals-log`,
-      );
+      const res = await axios.get(`${API_BASE_URL}/signals/global-signals-log`);
       if (res.data && res.data.success) {
         setGlobalSignals(res.data.logs || []);
         setMarketOpen(res.data.is_market_open);
@@ -205,15 +204,6 @@ export default function Dashboard() {
     } catch (e) {}
   };
 
-  const [dailyPerformance, setDailyPerformance] = useState([]);
-  const [showDailyPerformance, setShowDailyPerformance] = useState(false);
-  const [expandedPerfDates, setExpandedPerfDates] = useState({});
-
-  const isPerfDateExpanded = (idx) =>
-    idx === 0 ? expandedPerfDates[idx] !== false : !!expandedPerfDates[idx];
-  const togglePerfDateExpand = (idx) =>
-    setExpandedPerfDates((prev) => ({ ...prev, [idx]: !isPerfDateExpanded(idx) }));
-
   const fetchDailyPerformance = async () => {
     try {
       const res = await axios.get(
@@ -222,7 +212,90 @@ export default function Dashboard() {
       if (res.data && res.data.success) {
         setDailyPerformance(res.data.days || []);
       }
+    } catch (e) {
+      console.error("Daily performance fetch error:", e);
+    }
+  };
+
+  const [dailyPerformance, setDailyPerformance] = useState([]);
+  const [showDailyPerformance, setShowDailyPerformance] = useState(false);
+  const [expandedPerfDates, setExpandedPerfDates] = useState({});
+
+  const [indexPerformance, setIndexPerformance] = useState([]);
+  const [showIndexPerformance, setShowIndexPerformance] = useState(false);
+
+  const fetchIndexPerformance = async () => {
+    try {
+      const res = await axios.get(
+        `${API_BASE_URL}/signals/admin/strategy-index-performance`,
+      );
+      if (res.data && res.data.success)
+        setIndexPerformance(res.data.strategies || []);
     } catch (e) {}
+  };
+
+  const isPerfDateExpanded = (idx) =>
+    idx === 0 ? expandedPerfDates[idx] !== false : !!expandedPerfDates[idx];
+  const togglePerfDateExpand = (idx) =>
+    setExpandedPerfDates((prev) => ({
+      ...prev,
+      [idx]: !isPerfDateExpanded(idx),
+    }));
+
+  const fetchTodayLeaderboard = async () => {
+    try {
+      const res = await axios.get(
+        `${API_BASE_URL}/signals/strategy-winrate-today`,
+      );
+      if (res.data && res.data.success)
+        setTodayLeaderboard(res.data.strategies || []);
+    } catch (e) {}
+  };
+
+  const fetchStrategyToggles = async () => {
+    try {
+      const res = await axios.get(
+        `${API_BASE_URL}/signals/admin/strategy-toggles`,
+      );
+      if (res.data && res.data.success)
+        setStrategyToggles(res.data.toggles || []);
+    } catch (e) {}
+  };
+
+  const handleToggleStrategy = async (key, currentEnabled) => {
+    try {
+      await axios.post(`${API_BASE_URL}/signals/admin/strategy-toggle`, {
+        key,
+        enabled: !currentEnabled,
+      });
+      fetchStrategyToggles();
+    } catch (e) {
+      alert("Toggle failed, dubara try karein.");
+    }
+  };
+
+  const handleExecuteScannerSignal = async (sig) => {
+    if (executedScannerSignalIds.includes(sig._id)) return;
+    try {
+      const res = await axios.post(`${API_BASE_URL}/paper/place-trade`, {
+        index_name: sig.index_name,
+        signal: sig.signal,
+        strike: sig.strike,
+        security_id: sig.security_id,
+        signal_id: sig._id,
+        entry_price: sig.entry_price,
+        stop_loss: sig.stop_loss,
+        target1: sig.shz_upper,
+        lots: 1,
+      });
+      if (res.data && res.data.success) {
+        setExecutedScannerSignalIds((prev) => [...prev, sig._id]);
+        alert("🎉 Paper Trade Executed!");
+        fetchPaperData();
+      }
+    } catch (e) {
+      alert(e.response?.data?.detail || "Execution failed!");
+    }
   };
 
   const fetchPaperData = async () => {
@@ -419,9 +492,11 @@ export default function Dashboard() {
     if (!user) return;
     fetchStrategySignalsLog();
     fetchStrategyLeaderboard();
+    fetchTodayLeaderboard();
     const interval = setInterval(() => {
       fetchStrategySignalsLog();
       fetchStrategyLeaderboard();
+      fetchTodayLeaderboard();
     }, 30000);
     return () => clearInterval(interval);
   }, [user]);
@@ -456,7 +531,9 @@ export default function Dashboard() {
         fetchSignalsLog();
       } else {
         // Backend ne explicitly fail bola — silent rehne ke bajaye user ko batao
-        alert(`⚠️ ${res.data?.message || "Signal generate nahi ho paya. Dubara try karein."}`);
+        alert(
+          `⚠️ ${res.data?.message || "Signal generate nahi ho paya. Dubara try karein."}`,
+        );
       }
     } catch (e) {
       alert("⚠️ Network/server error — thodi der baad dubara try karein.");
@@ -705,8 +782,13 @@ export default function Dashboard() {
     return acc;
   }, {});
 
+  const todayLeaderboardMap = todayLeaderboard.reduce((acc, s) => {
+    acc[s.key] = s;
+    return acc;
+  }, {});
+
   const WinRateBadge = ({ breakoutStatus }) => {
-    const entry = leaderboardMap[breakoutStatus];
+    const entry = todayLeaderboardMap[breakoutStatus];
     if (!entry || entry.decided < 3) {
       return (
         <span className="text-[8px] md:text-[9px] text-slate-600 bg-slate-800/60 px-1.5 py-0.5 rounded">
@@ -992,7 +1074,8 @@ export default function Dashboard() {
                 {strategySignals.length > 0 ? (
                   sortDateKeysDesc(groupSignalsByDate(strategySignals)).map(
                     (dateKey) => {
-                      const dayList = groupSignalsByDate(strategySignals)[dateKey];
+                      const dayList =
+                        groupSignalsByDate(strategySignals)[dateKey];
                       const expanded = isStrategyDateExpanded(dateKey);
                       return (
                         <div key={dateKey}>
@@ -1019,10 +1102,15 @@ export default function Dashboard() {
                                 <div className="min-w-0">
                                   <div className="flex items-center gap-1.5 md:gap-2 mb-1 flex-wrap">
                                     <span className="text-[9px] md:text-[10px] font-bold text-emerald-300 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-                                      {leaderboardMap[sig.breakout_status]?.nickname ||
-                                        sig.breakout_status?.replace("STRAT_", "").replace(/_/g, " ")}
+                                      {leaderboardMap[sig.breakout_status]
+                                        ?.nickname ||
+                                        sig.breakout_status
+                                          ?.replace("STRAT_", "")
+                                          .replace(/_/g, " ")}
                                     </span>
-                                    <WinRateBadge breakoutStatus={sig.breakout_status} />
+                                    <WinRateBadge
+                                      breakoutStatus={sig.breakout_status}
+                                    />
                                   </div>
                                   <div className="flex items-center gap-1.5 md:gap-2 mb-1 flex-wrap">
                                     <span className="text-[10px] md:text-xs font-bold text-slate-200">
@@ -1058,14 +1146,23 @@ export default function Dashboard() {
                                     </span>
                                     {(() => {
                                       const info = getSignalLiveInfo(sig);
-                                      if (sig.status === "ACTIVE" && info.hasLiveTick) {
+                                      if (
+                                        sig.status === "ACTIVE" &&
+                                        info.hasLiveTick
+                                      ) {
                                         return (
                                           <span className="animate-pulse">
                                             LTP{" "}
                                             <b className="text-slate-200">
                                               ₹{info.liveLtp}
                                             </b>{" "}
-                                            <b className={info.pnlPct >= 0 ? "text-emerald-400" : "text-red-400"}>
+                                            <b
+                                              className={
+                                                info.pnlPct >= 0
+                                                  ? "text-emerald-400"
+                                                  : "text-red-400"
+                                              }
+                                            >
                                               ({info.pnlPct >= 0 ? "+" : ""}
                                               {info.pnlPct.toFixed(1)}%)
                                             </b>
@@ -1075,31 +1172,57 @@ export default function Dashboard() {
                                       return null;
                                     })()}
                                   </div>
-                                  {sig.status === "EXPIRED" && (() => {
-                                    const info = getSignalLiveInfo(sig);
-                                    if (!info.expiredLabel) return null;
-                                    return (
-                                      <p
-                                        className={`text-[9px] md:text-[10px] mt-1 ${info.expiredPositive ? "text-emerald-500/80" : "text-red-500/80"}`}
-                                      >
-                                        {info.expiredLabel}
-                                      </p>
-                                    );
-                                  })()}
+                                  {sig.status === "EXPIRED" &&
+                                    (() => {
+                                      const info = getSignalLiveInfo(sig);
+                                      if (!info.expiredLabel) return null;
+                                      return (
+                                        <p
+                                          className={`text-[9px] md:text-[10px] mt-1 ${info.expiredPositive ? "text-emerald-500/80" : "text-red-500/80"}`}
+                                        >
+                                          {info.expiredLabel}
+                                        </p>
+                                      );
+                                    })()}
                                 </div>
-                                <span
-                                  className={`px-2 py-0.5 rounded text-[9px] md:text-[10px] font-bold whitespace-nowrap shrink-0 ${
-                                    sig.status === "TARGET_HIT"
-                                      ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
-                                      : sig.status === "SL_HIT"
-                                        ? "bg-red-500/20 text-red-400 border border-red-500/40"
-                                        : sig.status === "EXPIRED"
-                                          ? "bg-amber-500/20 text-amber-400 border border-amber-500/40"
-                                          : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 animate-pulse"
-                                  }`}
-                                >
-                                  {sig.status}
-                                </span>
+                                <div className="flex flex-col items-end shrink-0">
+                                  <span
+                                    className={`px-2 py-0.5 rounded text-[9px] md:text-[10px] font-bold whitespace-nowrap ${
+                                      sig.status === "TARGET_HIT"
+                                        ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+                                        : sig.status === "SL_HIT"
+                                          ? "bg-red-500/20 text-red-400 border border-red-500/40"
+                                          : sig.status === "EXPIRED"
+                                            ? "bg-amber-500/20 text-amber-400 border border-amber-500/40"
+                                            : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 animate-pulse"
+                                    }`}
+                                  >
+                                    {sig.status}
+                                  </span>
+                                  {sig.status === "ACTIVE" && (
+                                    <button
+                                      onClick={() =>
+                                        handleExecuteScannerSignal(sig)
+                                      }
+                                      disabled={executedScannerSignalIds.includes(
+                                        sig._id,
+                                      )}
+                                      className={`mt-1 px-2 py-0.5 rounded text-[9px] font-bold whitespace-nowrap ${
+                                        executedScannerSignalIds.includes(
+                                          sig._id,
+                                        )
+                                          ? "bg-slate-700 text-slate-400"
+                                          : "bg-emerald-500 text-slate-950"
+                                      }`}
+                                    >
+                                      {executedScannerSignalIds.includes(
+                                        sig._id,
+                                      )
+                                        ? "✅ Executed"
+                                        : "Execute Paper Trade"}
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             ))}
                         </div>
@@ -1589,8 +1712,8 @@ export default function Dashboard() {
 
         {activeTab === "ADMIN" && (
           <div className="space-y-6">
-            {/* Toggle buttons for the two big collapsible sections */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {/* Toggle buttons for the collapsible sections */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
               <button
                 onClick={() => setShowAccuracyDetails((v) => !v)}
                 className="bg-indigo-950/30 border border-indigo-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-indigo-950/50 transition-all"
@@ -1607,7 +1730,7 @@ export default function Dashboard() {
                 className="bg-emerald-950/30 border border-emerald-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-emerald-950/50 transition-all"
               >
                 <span className="text-sm font-bold text-emerald-300 flex items-center gap-2">
-                  🏆 All-Time Leaderboard
+                  🏆 All-Time
                 </span>
                 <span className="text-xs text-slate-500">
                   {showStrategyLeaderboard ? "▾" : "▸"}
@@ -1617,15 +1740,33 @@ export default function Dashboard() {
                 onClick={() => {
                   const next = !showDailyPerformance;
                   setShowDailyPerformance(next);
-                  if (next) fetchDailyPerformance();
+                  if (next) {
+                    fetchDailyPerformance();
+                    fetchStrategyToggles();
+                  }
                 }}
                 className="bg-orange-950/30 border border-orange-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-orange-950/50 transition-all"
               >
                 <span className="text-sm font-bold text-orange-300 flex items-center gap-2">
-                  📅 Daily Performance
+                  📅 Daily Perf
                 </span>
                 <span className="text-xs text-slate-500">
                   {showDailyPerformance ? "▾" : "▸"}
+                </span>
+              </button>
+              <button
+                onClick={() => {
+                  const next = !showIndexPerformance;
+                  setShowIndexPerformance(next);
+                  if (next) fetchIndexPerformance();
+                }}
+                className="bg-cyan-950/30 border border-cyan-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-cyan-950/50 transition-all"
+              >
+                <span className="text-sm font-bold text-cyan-300 flex items-center gap-2">
+                  📍 Index Perf
+                </span>
+                <span className="text-xs text-slate-500">
+                  {showIndexPerformance ? "▾" : "▸"}
                 </span>
               </button>
             </div>
@@ -1654,8 +1795,8 @@ export default function Dashboard() {
                             {day.strategies.length} strategies
                           </span>
                         </div>
-                        {expanded && (
-                          day.strategies.length > 0 ? (
+                        {expanded &&
+                          (day.strategies.length > 0 ? (
                             <div className="overflow-x-auto mt-2 mb-1">
                               <table className="w-full text-left text-xs text-slate-300 min-w-[450px]">
                                 <thead className="bg-slate-950/60 text-slate-500 border-b border-slate-800 uppercase text-[9px]">
@@ -1665,11 +1806,15 @@ export default function Dashboard() {
                                     <th className="p-2">Target</th>
                                     <th className="p-2">SL</th>
                                     <th className="p-2">Decided</th>
+                                    <th className="p-2">Status</th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {day.strategies.map((s) => (
-                                    <tr key={s.key} className="border-b border-slate-800/50">
+                                    <tr
+                                      key={s.key}
+                                      className="border-b border-slate-800/50"
+                                    >
                                       <td className="p-2 font-semibold text-slate-200">
                                         {s.nickname}
                                       </td>
@@ -1678,9 +1823,43 @@ export default function Dashboard() {
                                       >
                                         {s.win_rate_percentage}%
                                       </td>
-                                      <td className="p-2 text-emerald-400">{s.target_hit}</td>
-                                      <td className="p-2 text-red-400">{s.sl_hit}</td>
-                                      <td className="p-2 text-slate-400">{s.decided}</td>
+                                      <td className="p-2 text-emerald-400">
+                                        {s.target_hit}
+                                      </td>
+                                      <td className="p-2 text-red-400">
+                                        {s.sl_hit}
+                                      </td>
+                                      <td className="p-2 text-slate-400">
+                                        {s.decided}
+                                      </td>
+                                      <td className="p-2">
+                                        {(() => {
+                                          const t = strategyToggles.find(
+                                            (x) =>
+                                              x.key ===
+                                              s.key.replace("STRAT_", ""),
+                                          );
+                                          const enabled = t ? t.enabled : true;
+                                          return (
+                                            <button
+                                              onClick={() =>
+                                                handleToggleStrategy(
+                                                  t?.key ||
+                                                    s.key.replace("STRAT_", ""),
+                                                  enabled,
+                                                )
+                                              }
+                                              className={`px-2 py-0.5 rounded text-[9px] font-bold ${
+                                                enabled
+                                                  ? "bg-emerald-500/20 text-emerald-400"
+                                                  : "bg-red-500/20 text-red-400"
+                                              }`}
+                                            >
+                                              {enabled ? "ON" : "OFF"}
+                                            </button>
+                                          );
+                                        })()}
+                                      </td>
                                     </tr>
                                   ))}
                                 </tbody>
@@ -1690,11 +1869,77 @@ export default function Dashboard() {
                             <p className="text-[10px] text-slate-600 mt-1 mb-1 px-3">
                               Is din koi trade decide nahi hua.
                             </p>
-                          )
-                        )}
+                          ))}
                       </div>
                     );
                   })
+                ) : (
+                  <p className="text-xs text-slate-500 text-center py-4">
+                    Loading...
+                  </p>
+                )}
+              </div>
+            )}
+
+            {showIndexPerformance && (
+              <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-4 md:p-6 space-y-4">
+                <h3 className="text-sm md:text-base font-bold text-slate-200 mb-2">
+                  📍 Strategy Performance by Index (All-Time)
+                </h3>
+                {indexPerformance.length > 0 ? (
+                  indexPerformance.map((strat) => (
+                    <div
+                      key={strat.key}
+                      className="bg-slate-950/60 border border-slate-800/80 rounded-2xl p-3 md:p-4"
+                    >
+                      <p className="text-xs font-bold text-cyan-300 mb-2">
+                        {strat.nickname}
+                      </p>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs text-slate-300 min-w-[400px]">
+                          <thead className="bg-slate-900/80 text-slate-500 border-b border-slate-800 uppercase text-[9px]">
+                            <tr>
+                              <th className="p-2">Index</th>
+                              <th className="p-2">Win Rate</th>
+                              <th className="p-2">Target</th>
+                              <th className="p-2">SL</th>
+                              <th className="p-2">Decided</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {strat.indices.map((idx) => (
+                              <tr
+                                key={idx.index_name}
+                                className="border-b border-slate-800/50"
+                              >
+                                <td className="p-2 font-semibold text-slate-200">
+                                  {idx.index_name}
+                                </td>
+                                <td
+                                  className={`p-2 font-extrabold ${
+                                    idx.win_rate_percentage >= 50
+                                      ? "text-emerald-400"
+                                      : "text-red-400"
+                                  }`}
+                                >
+                                  {idx.win_rate_percentage}%
+                                </td>
+                                <td className="p-2 text-emerald-400">
+                                  {idx.target_hit}
+                                </td>
+                                <td className="p-2 text-red-400">
+                                  {idx.sl_hit}
+                                </td>
+                                <td className="p-2 text-slate-400">
+                                  {idx.decided}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))
                 ) : (
                   <p className="text-xs text-slate-500 text-center py-4">
                     Loading...
@@ -1722,23 +1967,33 @@ export default function Dashboard() {
                     <tbody>
                       {strategyLeaderboard.length > 0 ? (
                         strategyLeaderboard.map((s) => (
-                          <tr key={s.key} className="border-b border-slate-800/50">
+                          <tr
+                            key={s.key}
+                            className="border-b border-slate-800/50"
+                          >
                             <td className="p-2 font-semibold text-slate-200">
                               {s.nickname}
                             </td>
                             <td
                               className={`p-2 font-extrabold ${s.win_rate_percentage >= 50 ? "text-emerald-400" : "text-red-400"}`}
                             >
-                              {s.decided >= 3 ? `${s.win_rate_percentage}%` : "—"}
+                              {s.decided >= 3
+                                ? `${s.win_rate_percentage}%`
+                                : "—"}
                             </td>
-                            <td className="p-2 text-emerald-400">{s.target_hit}</td>
+                            <td className="p-2 text-emerald-400">
+                              {s.target_hit}
+                            </td>
                             <td className="p-2 text-red-400">{s.sl_hit}</td>
                             <td className="p-2 text-slate-400">{s.decided}</td>
                           </tr>
                         ))
                       ) : (
                         <tr>
-                          <td colSpan="5" className="p-6 text-center text-slate-500">
+                          <td
+                            colSpan="5"
+                            className="p-6 text-center text-slate-500"
+                          >
                             Koi strategy data abhi tak nahi hai.
                           </td>
                         </tr>
@@ -1750,142 +2005,145 @@ export default function Dashboard() {
             )}
 
             {showAccuracyDetails && (
-            <>
-            {/* 🎯 Real Accuracy Verification Tracker — cumulative across ALL signals ever,
+              <>
+                {/* 🎯 Real Accuracy Verification Tracker — cumulative across ALL signals ever,
                 used to validate actual win-rate before pricing/company decisions */}
-            <div className="bg-gradient-to-br from-indigo-900/40 to-slate-900/80 border border-indigo-500/30 rounded-3xl p-5 md:p-6">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
-                <div>
-                  <h3 className="text-base md:text-lg font-bold text-slate-100 flex items-center gap-2">
-                    <Target className="w-5 h-5 text-indigo-400" /> Live Accuracy
-                    Verification
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {accuracyStats.decided_signals} /{" "}
-                    {accuracyStats.verification_goal} signals verified
-                    {accuracyStats.is_goal_reached && " — Goal Reached! ✅"}
-                  </p>
-                  {accuracyStats.tracking_since ? (
-                    <p className="text-[10px] text-slate-500 mt-1">
-                      Tracking since:{" "}
-                      {new Date(accuracyStats.tracking_since).toLocaleString(
-                        "en-IN",
+                <div className="bg-gradient-to-br from-indigo-900/40 to-slate-900/80 border border-indigo-500/30 rounded-3xl p-5 md:p-6">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+                    <div>
+                      <h3 className="text-base md:text-lg font-bold text-slate-100 flex items-center gap-2">
+                        <Target className="w-5 h-5 text-indigo-400" /> Live
+                        Accuracy Verification
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {accuracyStats.decided_signals} /{" "}
+                        {accuracyStats.verification_goal} signals verified
+                        {accuracyStats.is_goal_reached && " — Goal Reached! ✅"}
+                      </p>
+                      {accuracyStats.tracking_since ? (
+                        <p className="text-[10px] text-slate-500 mt-1">
+                          Tracking since:{" "}
+                          {new Date(
+                            accuracyStats.tracking_since,
+                          ).toLocaleString("en-IN")}
+                        </p>
+                      ) : (
+                        <p className="text-[10px] text-amber-400 mt-1">
+                          ⚠️ Tracking abhi reset nahi hua — purane test signals
+                          bhi count ho rahe hain
+                        </p>
                       )}
-                    </p>
-                  ) : (
-                    <p className="text-[10px] text-amber-400 mt-1">
-                      ⚠️ Tracking abhi reset nahi hua — purane test signals bhi
-                      count ho rahe hain
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="text-right">
-                    <p className="text-xs text-slate-400 mb-0.5">
-                      Real Win Rate
-                    </p>
-                    <p
-                      className={`text-3xl md:text-4xl font-extrabold ${accuracyStats.win_rate_percentage >= 50 ? "text-emerald-400" : "text-red-400"}`}
-                    >
-                      {accuracyStats.win_rate_percentage}%
-                    </p>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="text-right">
+                        <p className="text-xs text-slate-400 mb-0.5">
+                          Real Win Rate
+                        </p>
+                        <p
+                          className={`text-3xl md:text-4xl font-extrabold ${accuracyStats.win_rate_percentage >= 50 ? "text-emerald-400" : "text-red-400"}`}
+                        >
+                          {accuracyStats.win_rate_percentage}%
+                        </p>
+                      </div>
+                      <button
+                        onClick={handleResetAccuracyTracking}
+                        className="bg-slate-800 hover:bg-red-500/20 text-slate-400 hover:text-red-400 border border-slate-700 hover:border-red-500/40 px-3 py-2 rounded-xl text-[10px] font-bold whitespace-nowrap transition-all"
+                        title="Purana data clear karke fresh se count shuru karo"
+                      >
+                        🔄 Reset Tracking
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    onClick={handleResetAccuracyTracking}
-                    className="bg-slate-800 hover:bg-red-500/20 text-slate-400 hover:text-red-400 border border-slate-700 hover:border-red-500/40 px-3 py-2 rounded-xl text-[10px] font-bold whitespace-nowrap transition-all"
-                    title="Purana data clear karke fresh se count shuru karo"
-                  >
-                    🔄 Reset Tracking
-                  </button>
-                </div>
-              </div>
 
-              {/* Progress bar towards 200-signal goal */}
-              <div className="w-full bg-slate-800 rounded-full h-2.5 mb-4 overflow-hidden">
-                <div
-                  className="bg-gradient-to-r from-indigo-500 to-cyan-400 h-2.5 rounded-full transition-all"
-                  style={{ width: `${accuracyStats.progress_percentage}%` }}
-                ></div>
-              </div>
-
-               <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
-                <div className="bg-slate-950/50 rounded-xl p-3">
-                  <p className="text-[10px] text-slate-500 uppercase mb-0.5">
-                    Total Signals
-                  </p>
-                  <p className="text-lg font-bold text-slate-100">
-                    {accuracyStats.total_signals_ever}
-                  </p>
-                </div>
-                <div className="bg-slate-950/50 rounded-xl p-3">
-                  <p className="text-[10px] text-slate-500 uppercase mb-0.5">
-                    Target Hit
-                  </p>
-                  <p className="text-lg font-bold text-emerald-400">
-                    {accuracyStats.total_target_hit}
-                  </p>
-                </div>
-                <div className="bg-slate-950/50 rounded-xl p-3">
-                  <p className="text-[10px] text-slate-500 uppercase mb-0.5">
-                    SL Hit
-                  </p>
-                  <p className="text-lg font-bold text-red-400">
-                    {accuracyStats.total_sl_hit}
-                  </p>
-                </div>
-                <div className="bg-slate-950/50 rounded-xl p-3">
-                  <p className="text-[10px] text-slate-500 uppercase mb-0.5">
-                    Still Active
-                  </p>
-                  <p className="text-lg font-bold text-cyan-400">
-                    {accuracyStats.total_active}
-                  </p>
-                </div>
-                <div className="bg-slate-950/50 rounded-xl p-3">
-                  <p className="text-[10px] text-slate-500 uppercase mb-0.5">
-                    Expired (EOD)
-                  </p>
-                  <p className="text-lg font-bold text-amber-400">
-                    {accuracyStats.total_expired}
-                  </p>
-                </div>
-              </div>
-
-              {/* 📊 Mode-wise split — Standard Signal (gated) vs Forced Scalp (ungated override) */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="bg-indigo-950/30 border border-indigo-500/20 rounded-xl p-3">
-                  <p className="text-[10px] text-indigo-300 uppercase mb-1 font-bold">
-                    Standard Signal (Confluence-Gated)
-                  </p>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-slate-400">
-                      {accuracyStats.standard_signal?.target_hit || 0}W /{" "}
-                      {accuracyStats.standard_signal?.sl_hit || 0}L (
-                      {accuracyStats.standard_signal?.decided || 0} decided)
-                    </span>
-                    <span className="text-lg font-extrabold text-indigo-300">
-                      {accuracyStats.standard_signal?.win_rate_percentage || 0}%
-                    </span>
+                  {/* Progress bar towards 200-signal goal */}
+                  <div className="w-full bg-slate-800 rounded-full h-2.5 mb-4 overflow-hidden">
+                    <div
+                      className="bg-gradient-to-r from-indigo-500 to-cyan-400 h-2.5 rounded-full transition-all"
+                      style={{ width: `${accuracyStats.progress_percentage}%` }}
+                    ></div>
                   </div>
-                </div>
-                <div className="bg-amber-950/20 border border-amber-500/20 rounded-xl p-3">
-                  <p className="text-[10px] text-amber-300 uppercase mb-1 font-bold">
-                    Forced Scalp (Ungated Override)
-                  </p>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-slate-400">
-                      {accuracyStats.forced_scalp?.target_hit || 0}W /{" "}
-                      {accuracyStats.forced_scalp?.sl_hit || 0}L (
-                      {accuracyStats.forced_scalp?.decided || 0} decided)
-                    </span>
-                    <span className="text-lg font-extrabold text-amber-300">
-                      {accuracyStats.forced_scalp?.win_rate_percentage || 0}%
-                    </span>
+
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+                    <div className="bg-slate-950/50 rounded-xl p-3">
+                      <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                        Total Signals
+                      </p>
+                      <p className="text-lg font-bold text-slate-100">
+                        {accuracyStats.total_signals_ever}
+                      </p>
+                    </div>
+                    <div className="bg-slate-950/50 rounded-xl p-3">
+                      <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                        Target Hit
+                      </p>
+                      <p className="text-lg font-bold text-emerald-400">
+                        {accuracyStats.total_target_hit}
+                      </p>
+                    </div>
+                    <div className="bg-slate-950/50 rounded-xl p-3">
+                      <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                        SL Hit
+                      </p>
+                      <p className="text-lg font-bold text-red-400">
+                        {accuracyStats.total_sl_hit}
+                      </p>
+                    </div>
+                    <div className="bg-slate-950/50 rounded-xl p-3">
+                      <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                        Still Active
+                      </p>
+                      <p className="text-lg font-bold text-cyan-400">
+                        {accuracyStats.total_active}
+                      </p>
+                    </div>
+                    <div className="bg-slate-950/50 rounded-xl p-3">
+                      <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                        Expired (EOD)
+                      </p>
+                      <p className="text-lg font-bold text-amber-400">
+                        {accuracyStats.total_expired}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 📊 Mode-wise split — Standard Signal (gated) vs Forced Scalp (ungated override) */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="bg-indigo-950/30 border border-indigo-500/20 rounded-xl p-3">
+                      <p className="text-[10px] text-indigo-300 uppercase mb-1 font-bold">
+                        Standard Signal (Confluence-Gated)
+                      </p>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-400">
+                          {accuracyStats.standard_signal?.target_hit || 0}W /{" "}
+                          {accuracyStats.standard_signal?.sl_hit || 0}L (
+                          {accuracyStats.standard_signal?.decided || 0} decided)
+                        </span>
+                        <span className="text-lg font-extrabold text-indigo-300">
+                          {accuracyStats.standard_signal?.win_rate_percentage ||
+                            0}
+                          %
+                        </span>
+                      </div>
+                    </div>
+                    <div className="bg-amber-950/20 border border-amber-500/20 rounded-xl p-3">
+                      <p className="text-[10px] text-amber-300 uppercase mb-1 font-bold">
+                        Forced Scalp (Ungated Override)
+                      </p>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-400">
+                          {accuracyStats.forced_scalp?.target_hit || 0}W /{" "}
+                          {accuracyStats.forced_scalp?.sl_hit || 0}L (
+                          {accuracyStats.forced_scalp?.decided || 0} decided)
+                        </span>
+                        <span className="text-lg font-extrabold text-amber-300">
+                          {accuracyStats.forced_scalp?.win_rate_percentage || 0}
+                          %
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </div>
-            </>
+              </>
             )}
 
             <div className="flex justify-end">

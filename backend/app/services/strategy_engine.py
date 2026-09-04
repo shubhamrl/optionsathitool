@@ -82,6 +82,63 @@ COOLDOWN_MINUTES = 5
 # ----------------------------------------------------------------------------
 STRATEGIES: List[Dict[str, Any]] = []
 
+_toggle_cache: Dict[str, bool] = {}
+_toggle_cache_time: Optional[datetime] = None
+TOGGLE_CACHE_TTL_SECONDS = 20
+
+
+async def get_strategy_toggles(db) -> Dict[str, bool]:
+    """Cached (20s) map of strategy_key -> enabled. Missing keys default to
+    enabled=True (a strategy is ON unless explicitly turned off in ADMIN)."""
+    global _toggle_cache, _toggle_cache_time
+    now = datetime.utcnow()
+    if _toggle_cache_time and (now - _toggle_cache_time).total_seconds() < TOGGLE_CACHE_TTL_SECONDS:
+        return _toggle_cache
+    toggles = {}
+    cursor = db.strategy_settings.find({})
+    async for doc in cursor:
+        toggles[doc["_id"]] = doc.get("enabled", True)
+    _toggle_cache = toggles
+    _toggle_cache_time = now
+    return toggles
+
+
+def _ist_today_bounds():
+    ist_offset = timedelta(hours=5, minutes=30)
+    ist_now = datetime.utcnow() + ist_offset
+    start = datetime(ist_now.year, ist_now.month, ist_now.day) - ist_offset
+    return start, start + timedelta(days=1)
+
+
+async def get_today_win_rate(db, breakout_status: str) -> Optional[float]:
+    """Returns today's live win-rate for a strategy, or None if fewer than 3
+    trades decided today (not enough sample to judge yet)."""
+    start, end = _ist_today_bounds()
+    t_hit = await db.signals.count_documents({
+        "breakout_status": breakout_status, "status": "TARGET_HIT",
+        "created_at": {"$gte": start, "$lt": end}
+    })
+    s_hit = await db.signals.count_documents({
+        "breakout_status": breakout_status, "status": "SL_HIT",
+        "created_at": {"$gte": start, "$lt": end}
+    })
+    decided = t_hit + s_hit
+    if decided < 3:
+        return None
+    return (t_hit / decided) * 100
+
+
+async def should_strategy_fire(db, strategy_key: str) -> bool:
+    """A strategy fires normally if it's ON. If turned OFF in ADMIN, it still
+    keeps scanning (data-read continues) but only fires when today's live
+    win-rate has proven itself at 80%+ — everyday 'random' signals stay
+    suppressed while it's off."""
+    toggles = await get_strategy_toggles(db)
+    if toggles.get(strategy_key, True):
+        return True
+    today_wr = await get_today_win_rate(db, f"STRAT_{strategy_key}")
+    return today_wr is not None and today_wr >= 80.0 
+
 
 def register_strategy(key: str, nickname: str, detect_fn: Callable):
     """Adds one strategy to the registry. Called at import-time by strategy
@@ -258,6 +315,8 @@ async def strategy_engine_loop(broadcast_callback=None):
                     try:
                         result = await strat["detect_fn"](index_name, context)
                         if result:
+                            if not await should_strategy_fire(db, strat["key"]):
+                                continue  # OFF and hasn't proven 80%+ today — data-read only, no signal
                             await _execute_strategy_signal(
                                 db, index_name, strat["key"], strat["nickname"],
                                 result["bias"], result.get("reasons", [result.get("reason", "")]),

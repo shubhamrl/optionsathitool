@@ -80,6 +80,8 @@ async def _run_on_demand_strategy_scan(db, index_name: str, current_user_id: str
     oc = context["oc"]
     _register_index_token_map(oc, index_name)
 
+    from app.services.strategy_engine import should_strategy_fire
+
     for strat in STRATEGIES:
         try:
             result = await strat["detect_fn"](index_name, context)
@@ -89,6 +91,9 @@ async def _run_on_demand_strategy_scan(db, index_name: str, current_user_id: str
 
         checked_names.append(strat["nickname"])
         if not result:
+            continue
+
+        if not await should_strategy_fire(db, strat["key"]):
             continue
 
         selected_type = result["bias"]
@@ -280,6 +285,65 @@ async def get_global_signals_log(
     return {"success": True, "is_market_open": market_status["is_open"], "logs": logs}
 
 
+@router.get("/strategy-winrate-today")
+async def get_strategy_winrate_today(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """TODAY-only win-rate per strategy — used by the Strategy Scanner card's
+    badges, so users see today's real performance, not a misleading all-time
+    average that might not reflect how a strategy is doing right now."""
+    from app.services.strategy_engine import _ist_today_bounds
+    start, end = _ist_today_bounds()
+
+    statuses = await db.signals.distinct("breakout_status", {"created_at": {"$gte": start, "$lt": end}})
+    results = []
+    for status in statuses:
+        if not status:
+            continue
+        t_hit = await db.signals.count_documents({"breakout_status": status, "status": "TARGET_HIT", "created_at": {"$gte": start, "$lt": end}})
+        s_hit = await db.signals.count_documents({"breakout_status": status, "status": "SL_HIT", "created_at": {"$gte": start, "$lt": end}})
+        decided = t_hit + s_hit
+        win_rate = round((t_hit / decided) * 100, 1) if decided > 0 else 0.0
+        results.append({"key": status, "target_hit": t_hit, "sl_hit": s_hit, "decided": decided, "win_rate_percentage": win_rate})
+
+    return {"success": True, "strategies": results}
+
+
+@router.get("/admin/strategy-toggles")
+async def get_all_strategy_toggles(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    from app.services.strategy_engine import STRATEGIES
+    cursor = db.strategy_settings.find({})
+    saved = {}
+    async for doc in cursor:
+        saved[doc["_id"]] = doc.get("enabled", True)
+
+    toggles = [{"key": s["key"], "nickname": s["nickname"], "enabled": saved.get(s["key"], True)} for s in STRATEGIES]
+    return {"success": True, "toggles": toggles}
+
+
+class StrategyToggleRequest(BaseModel):
+    key: str
+    enabled: bool
+
+
+@router.post("/admin/strategy-toggle")
+async def set_strategy_toggle(
+    payload: StrategyToggleRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    await db.strategy_settings.update_one(
+        {"_id": payload.key},
+        {"$set": {"enabled": payload.enabled, "updated_at": datetime.utcnow()}},
+        upsert=True
+    )
+    return {"success": True, "message": f"{payload.key} {'enabled' if payload.enabled else 'disabled'}."}
+
+
 @router.get("/strategy-signals-log")
 async def get_strategy_signals_log(
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -460,6 +524,52 @@ STRATEGY_NICKNAMES = {
     "STRAT_MULTI_TIMEFRAME": "Multi-Timeframe Confluence",
     "STRAT_IV_CONTRACTION": "IV Contraction Entry",
 }
+
+
+@router.get("/admin/strategy-index-performance")
+async def get_strategy_index_performance(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """All-time win-rate per (strategy, index) pair — shows WHERE each strategy
+    performs best, so users can trust a signal more when it fires on the index
+    that strategy is historically strong on."""
+    pipeline = [
+        {"$match": {"status": {"$in": ["TARGET_HIT", "SL_HIT"]}, "breakout_status": {"$ne": None}}},
+        {"$group": {
+            "_id": {"strategy": "$breakout_status", "index": "$index_name", "status": "$status"},
+            "count": {"$sum": 1}
+        }}
+    ]
+    rows = await db.signals.aggregate(pipeline).to_list(length=1000)
+
+    grouped: Dict[str, Dict[str, Dict[str, int]]] = {}
+    for r in rows:
+        strat = r["_id"]["strategy"]
+        idx = r["_id"]["index"]
+        stat = r["_id"]["status"]
+        grouped.setdefault(strat, {}).setdefault(idx, {"target_hit": 0, "sl_hit": 0})
+        if stat == "TARGET_HIT":
+            grouped[strat][idx]["target_hit"] = r["count"]
+        else:
+            grouped[strat][idx]["sl_hit"] = r["count"]
+
+    results = []
+    for strat, indices in grouped.items():
+        index_rows = []
+        for idx, counts in indices.items():
+            decided = counts["target_hit"] + counts["sl_hit"]
+            wr = round((counts["target_hit"] / decided) * 100, 1) if decided > 0 else 0.0
+            index_rows.append({"index_name": idx, "target_hit": counts["target_hit"], "sl_hit": counts["sl_hit"], "decided": decided, "win_rate_percentage": wr})
+        index_rows.sort(key=lambda r: -r["decided"])
+        results.append({
+            "key": strat,
+            "nickname": STRATEGY_NICKNAMES.get(strat, strat.replace("STRAT_", "").replace("_", " ").title()),
+            "indices": index_rows
+        })
+
+    results.sort(key=lambda r: -sum(i["decided"] for i in r["indices"]))
+    return {"success": True, "strategies": results}
 
 
 @router.get("/admin/strategy-leaderboard")
