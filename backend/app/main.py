@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
     ws_task = asyncio.create_task(dhan_ws_client.connect_and_listen(broadcast_callback=global_broadcast))
     logger.info("📡 Dhan Live WebSocket Feed Task Initialized in Background.")
 
-    eod_task = asyncio.create_task(eod_auto_square_off_loop())
+    eod_task = asyncio.create_task(eod_auto_square_off_loop(broadcast_callback=global_broadcast))
     logger.info("⏱️ EOD Auto Square-Off Scheduler Task Initialized in Background.")
 
     # NOTE: Global Market Scanner has been retired — ORB Breaker now lives in the
