@@ -69,7 +69,9 @@ async def _refresh_market_snapshot(db, index_name: str):
     )
 STRATEGY_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
 STRATEGY_SIGNAL_USER_ID = "SYSTEM_STRATEGY_ENGINE"
-COOLDOWN_MINUTES = 5
+COOLDOWN_MINUTES = 15  # widened from 5 — was letting the same strike re-fire too fast
+INDEX_RATE_CAP_COUNT = 3
+INDEX_RATE_CAP_MINUTES = 20
 
 # ----------------------------------------------------------------------------
 # STRATEGY REGISTRY — each entry is one pluggable strategy. `detect_fn` receives
@@ -222,15 +224,32 @@ async def _execute_strategy_signal(
 
     breakout_status = f"STRAT_{strategy_key}"
 
+    # 🎯 QUALITY GATE 1 — Cross-strategy dedup: if ANY strategy already signalled
+    # this exact index+strike+direction recently, don't let a DIFFERENT strategy
+    # fire an effective duplicate on the same setup (this was the main source of
+    # "doubled" signals — 5 strategies agreeing on one real move = 5 separate
+    # signals instead of 1).
     cooling_window = datetime.utcnow() - timedelta(minutes=COOLDOWN_MINUTES)
-    recent = await db.signals.find_one({
+    recent_any_strategy = await db.signals.find_one({
         "user_id": STRATEGY_SIGNAL_USER_ID,
         "atm_strike": atm_strike,
         "index_name": index_name,
-        "breakout_status": breakout_status,
+        "selected_type": selected_type,
         "created_at": {"$gt": cooling_window}
     })
-    if recent:
+    if recent_any_strategy:
+        return
+
+    # 🎯 QUALITY GATE 2 — Hard per-index rate cap, regardless of which strategy(s)
+    # are firing. Caps total signal VOLUME so a choppy session can't flood the
+    # feed even if many different setups are technically "valid" one after another.
+    rate_window = datetime.utcnow() - timedelta(minutes=INDEX_RATE_CAP_MINUTES)
+    recent_count_this_index = await db.signals.count_documents({
+        "user_id": STRATEGY_SIGNAL_USER_ID,
+        "index_name": index_name,
+        "created_at": {"$gt": rate_window}
+    })
+    if recent_count_this_index >= INDEX_RATE_CAP_COUNT:
         return
 
     iv = float(selected_node.get("implied_volatility") or 13.5) if selected_node else 13.5
