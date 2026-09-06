@@ -160,7 +160,10 @@ class DhanWebSocketClient:
                     await self._subscribe_index_spots()
 
                     if subscribed_security_ids:
-                        await self.subscribe_symbols(list(subscribed_security_ids))
+                        # 🔴 CRITICAL FIX: force=True is required here — this fresh
+                        # Dhan connection has no subscriptions yet, even though our
+                        # local set remembers "old" ones from before the disconnect.
+                        await self.subscribe_symbols(list(subscribed_security_ids), force=True)
 
                     while True:
                         raw_msg = await ws.recv()
@@ -192,23 +195,45 @@ class DhanWebSocketClient:
         except Exception as e:
             logger.error(f"Failed to subscribe index spots: {str(e)}")
 
-    async def subscribe_symbols(self, security_ids: List[str], exchange_segment: str = "NSE_FNO"):
+    async def subscribe_symbols(self, security_ids: List[str], exchange_segment: str = "NSE_FNO", force: bool = False):
+        """
+        force=True bypasses the 'already subscribed' filter — REQUIRED on
+        reconnect, since a fresh Dhan connection has ZERO subscriptions even
+        though our local `subscribed_security_ids` set still remembers the old
+        ones. Without force, resubscribe-after-reconnect was silently a no-op
+        (every id appeared 'already subscribed' against itself), meaning any
+        WebSocket reconnect during the day permanently stopped ticks for every
+        previously-tracked contract — the root cause of signals getting stuck
+        ACTIVE all day.
+
+        Also batches into groups of 100 (Dhan's documented per-message limit
+        for RequestCode 17) — sending more than 100 in one message risked
+        silent rejection/truncation once enough strategies were generating
+        signals across a full trading day.
+        """
         if not self.ws or not self.is_connected:
             subscribed_security_ids.update(security_ids)
             return
 
-        clean_ids = [str(sid) for sid in security_ids if str(sid) not in subscribed_security_ids]
+        if force:
+            clean_ids = [str(sid) for sid in security_ids]
+        else:
+            clean_ids = [str(sid) for sid in security_ids if str(sid) not in subscribed_security_ids]
+
         if not clean_ids:
             return
 
-        instruments = [{"ExchangeSegment": exchange_segment, "SecurityId": sid} for sid in clean_ids]
-        payload = {"RequestCode": 17, "InstrumentCount": len(instruments), "InstrumentList": instruments}
-        try:
-            await self.ws.send(json.dumps(payload))
-            subscribed_security_ids.update(clean_ids)
-            logger.info(f"📡 Subscribed {len(clean_ids)} option contracts.")
-        except Exception as e:
-            logger.error(f"Failed to subscribe options: {str(e)}")
+        BATCH_SIZE = 100
+        for i in range(0, len(clean_ids), BATCH_SIZE):
+            batch = clean_ids[i:i + BATCH_SIZE]
+            instruments = [{"ExchangeSegment": exchange_segment, "SecurityId": sid} for sid in batch]
+            payload = {"RequestCode": 17, "InstrumentCount": len(instruments), "InstrumentList": instruments}
+            try:
+                await self.ws.send(json.dumps(payload))
+                subscribed_security_ids.update(batch)
+                logger.info(f"📡 Subscribed {len(batch)} option contracts (batch {i // BATCH_SIZE + 1}).")
+            except Exception as e:
+                logger.error(f"Failed to subscribe options batch: {str(e)}")
 
     async def _handle_tick_update(self, tick: Dict[str, Any], broadcast_callback=None):
         sec_id = tick["security_id"]
