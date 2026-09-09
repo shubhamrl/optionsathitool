@@ -652,6 +652,176 @@ async def get_strategy_leaderboard_daily(
     return {"success": True, "days": days_data}
 
 
+class AlgoWhitelistRequest(BaseModel):
+    strategy_key: str
+    index_name: str
+    enabled: bool
+
+
+@router.get("/admin/algo-whitelist")
+async def get_algo_whitelist(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    cursor = db.algo_whitelist.find({})
+    items = []
+    async for doc in cursor:
+        items.append({"strategy_key": doc["strategy_key"], "index_name": doc["index_name"], "enabled": doc.get("enabled", True)})
+    return {"success": True, "whitelist": items}
+
+
+@router.post("/admin/algo-whitelist")
+async def set_algo_whitelist(
+    payload: AlgoWhitelistRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    await db.algo_whitelist.update_one(
+        {"strategy_key": payload.strategy_key, "index_name": payload.index_name},
+        {"$set": {"enabled": payload.enabled, "updated_at": datetime.utcnow()}},
+        upsert=True
+    )
+    return {"success": True, "message": "Whitelist updated."}
+
+
+@router.get("/algo-signals-log")
+async def get_algo_signals_log(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """Confirmed algo signals from the last 24 hours, with live status pulled
+    from the original signals collection (single source of truth for status)."""
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+    cursor = db.algo_confirmed_signals.find({"confirmed_at": {"$gte": cutoff}}).sort("confirmed_at", -1).limit(50)
+    confirmed_list = await cursor.to_list(length=50)
+
+    logs = []
+    for c in confirmed_list:
+        try:
+            from bson import ObjectId
+            sig = await db.signals.find_one({"_id": ObjectId(c["signal_id"])})
+            if sig:
+                sig["_id"] = str(sig["_id"])
+                if sig.get("created_at"):
+                    sig["created_at"] = sig["created_at"].isoformat()
+                logs.append(sig)
+        except Exception:
+            continue
+
+    return {"success": True, "logs": logs}
+
+
+class UserAlgoSettingRequest(BaseModel):
+    strategy_key: str
+    index_name: str
+    auto_paper_trade: bool
+    lot_size: int = 1
+
+
+@router.get("/user-algo-settings")
+async def get_user_algo_settings(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """Returns every WHITELISTED combo, with this user's saved preference (or
+    defaults) for each — frontend renders one toggle row per whitelisted combo."""
+    user_id = str(current_user["_id"])
+
+    whitelist_cursor = db.algo_whitelist.find({"enabled": True})
+    whitelist = await whitelist_cursor.to_list(length=100)
+
+    user_cursor = db.user_algo_settings.find({"user_id": user_id})
+    user_settings = {}
+    async for doc in user_cursor:
+        user_settings[f"{doc['strategy_key']}::{doc['index_name']}"] = doc
+
+    results = []
+    for w in whitelist:
+        key = f"{w['strategy_key']}::{w['index_name']}"
+        saved = user_settings.get(key)
+        results.append({
+            "strategy_key": w["strategy_key"],
+            "index_name": w["index_name"],
+            "nickname": STRATEGY_NICKNAMES.get(f"STRAT_{w['strategy_key']}", w["strategy_key"]),
+            "auto_paper_trade": saved.get("auto_paper_trade", False) if saved else False,
+            "lot_size": saved.get("lot_size", 1) if saved else 1,
+        })
+
+    return {"success": True, "settings": results}
+
+
+@router.post("/user-algo-settings")
+async def save_user_algo_settings(
+    payload: UserAlgoSettingRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    user_id = str(current_user["_id"])
+    await db.user_algo_settings.update_one(
+        {"user_id": user_id, "strategy_key": payload.strategy_key, "index_name": payload.index_name},
+        {"$set": {
+            "auto_paper_trade": payload.auto_paper_trade,
+            "lot_size": payload.lot_size,
+            "updated_at": datetime.utcnow()
+        }},
+        upsert=True
+    )
+    return {"success": True, "message": "Algo setting saved."}
+
+
+@router.get("/admin/algo-accuracy")
+async def get_algo_accuracy_stats(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """Accuracy stats specifically for ALGO_VERIFIED signals (those that passed
+    the 30-second confirmation layer) — separate from the main Live Accuracy
+    Verification card, so the extra verification-step's value is measurable."""
+    confirmed_ids_cursor = db.algo_confirmed_signals.find({})
+    confirmed_docs = await confirmed_ids_cursor.to_list(length=5000)
+    from bson import ObjectId
+    signal_object_ids = []
+    for c in confirmed_docs:
+        try:
+            signal_object_ids.append(ObjectId(c["signal_id"]))
+        except Exception:
+            continue
+
+    if not signal_object_ids:
+        return {
+            "success": True,
+            "stats": {
+                "total_confirmed": 0, "target_hit": 0, "sl_hit": 0, "active": 0,
+                "expired": 0, "decided": 0, "win_rate_percentage": 0.0,
+                "total_rejected": await db.algo_pending_verification.count_documents({"resolved": True, "confirmed": False})
+            }
+        }
+
+    target_hit = await db.signals.count_documents({"_id": {"$in": signal_object_ids}, "status": "TARGET_HIT"})
+    sl_hit = await db.signals.count_documents({"_id": {"$in": signal_object_ids}, "status": "SL_HIT"})
+    active = await db.signals.count_documents({"_id": {"$in": signal_object_ids}, "status": "ACTIVE"})
+    expired = await db.signals.count_documents({"_id": {"$in": signal_object_ids}, "status": "EXPIRED"})
+
+    decided = target_hit + sl_hit
+    win_rate = round((target_hit / decided) * 100, 1) if decided > 0 else 0.0
+
+    total_rejected = await db.algo_pending_verification.count_documents({"resolved": True, "confirmed": False})
+
+    return {
+        "success": True,
+        "stats": {
+            "total_confirmed": len(signal_object_ids),
+            "target_hit": target_hit,
+            "sl_hit": sl_hit,
+            "active": active,
+            "expired": expired,
+            "decided": decided,
+            "win_rate_percentage": win_rate,
+            "total_rejected": total_rejected
+        }
+    }
+
+
 @router.post("/admin/reset-accuracy-tracking")
 async def reset_accuracy_tracking(
     current_user: Dict[str, Any] = Depends(get_current_user),

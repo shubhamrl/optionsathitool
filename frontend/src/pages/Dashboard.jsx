@@ -234,6 +234,105 @@ export default function Dashboard() {
     } catch (e) {}
   };
 
+  // 🤖 Algo Trade States & Handlers
+  const [algoSignals, setAlgoSignals] = useState([]);
+  const [userAlgoSettings, setUserAlgoSettings] = useState([]);
+  const [adminAlgoWhitelist, setAdminAlgoWhitelist] = useState([]);
+
+  const fetchAlgoSignals = async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/signals/algo-signals-log`);
+      if (res.data && res.data.success) setAlgoSignals(res.data.logs || []);
+    } catch (e) {}
+  };
+
+  const fetchUserAlgoSettings = async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/signals/user-algo-settings`);
+      if (res.data && res.data.success)
+        setUserAlgoSettings(res.data.settings || []);
+    } catch (e) {}
+  };
+
+  const handleSaveUserAlgoSetting = async (
+    strategy_key,
+    index_name,
+    auto_paper_trade,
+    lot_size,
+  ) => {
+    try {
+      await axios.post(`${API_BASE_URL}/signals/user-algo-settings`, {
+        strategy_key,
+        index_name,
+        auto_paper_trade,
+        lot_size,
+      });
+      fetchUserAlgoSettings();
+    } catch (e) {
+      alert("Setting save failed.");
+    }
+  };
+
+  const fetchAdminAlgoWhitelist = async () => {
+    try {
+      const res = await axios.get(
+        `${API_BASE_URL}/signals/admin/algo-whitelist`,
+      );
+      if (res.data && res.data.success)
+        setAdminAlgoWhitelist(res.data.whitelist || []);
+    } catch (e) {}
+  };
+
+  const handleToggleAlgoWhitelist = async (
+    strategy_key,
+    index_name,
+    currentEnabled,
+  ) => {
+    try {
+      await axios.post(`${API_BASE_URL}/signals/admin/algo-whitelist`, {
+        strategy_key,
+        index_name,
+        enabled: !currentEnabled,
+      });
+      fetchAdminAlgoWhitelist();
+    } catch (e) {
+      alert("Whitelist toggle failed.");
+    }
+  };
+
+  // 🤖 Algo Accuracy Stats & Fetch
+  const [algoAccuracyStats, setAlgoAccuracyStats] = useState({
+    total_confirmed: 0,
+    target_hit: 0,
+    sl_hit: 0,
+    active: 0,
+    expired: 0,
+    decided: 0,
+    win_rate_percentage: 0,
+    total_rejected: 0,
+  });
+
+  const fetchAlgoAccuracy = async () => {
+    try {
+      const res = await axios.get(
+        `${API_BASE_URL}/signals/admin/algo-accuracy`,
+      );
+      if (res.data && res.data.success) setAlgoAccuracyStats(res.data.stats);
+    } catch (e) {}
+  };
+
+  // 📅 Date Helpers for Algo Trade Cards
+  const [expandedAlgoDates, setExpandedAlgoDates] = useState({});
+  const isAlgoDateExpanded = (key) =>
+    key === todayDateKey
+      ? expandedAlgoDates[key] !== false
+      : !!expandedAlgoDates[key];
+  const toggleAlgoDateExpand = (key) =>
+    setExpandedAlgoDates((prev) => ({
+      ...prev,
+      [key]: !isAlgoDateExpanded(key),
+    }));
+
   const isPerfDateExpanded = (idx) =>
     idx === 0 ? expandedPerfDates[idx] !== false : !!expandedPerfDates[idx];
   const togglePerfDateExpand = (idx) =>
@@ -311,6 +410,7 @@ export default function Dashboard() {
 
   const fetchAdminData = async () => {
     try {
+      fetchAlgoAccuracy();
       const [statsRes, usersRes, accuracyRes] = await Promise.all([
         axios.get(`${API_BASE_URL}/signals/admin/today-stats`),
         axios.get(`${API_BASE_URL}/auth/admin/users-list`),
@@ -441,6 +541,14 @@ export default function Dashboard() {
               return [sig, ...filtered].slice(0, 100);
             });
           }
+        } else if (message.type === "ALGO_SIGNAL_CONFIRMED") {
+          const sig = message.signal;
+          if (sig) {
+            setAlgoSignals((prev) => {
+              const filtered = prev.filter((s) => s._id !== sig._id);
+              return [sig, ...filtered].slice(0, 50);
+            });
+          }
         } else if (
           message.type === "SIGNAL_STATUS_UPDATE" ||
           message.type === "PAPER_TRADE_AUTO_CLOSED"
@@ -498,6 +606,15 @@ export default function Dashboard() {
       fetchStrategyLeaderboard();
       fetchTodayLeaderboard();
     }, 30000);
+    return () => clearInterval(interval);
+  }, [user]);
+
+  // 🤖 Algo Signals & Settings Polling
+  useEffect(() => {
+    if (!user) return;
+    fetchAlgoSignals();
+    fetchUserAlgoSettings();
+    const interval = setInterval(fetchAlgoSignals, 30000);
     return () => clearInterval(interval);
   }, [user]);
 
@@ -902,13 +1019,77 @@ export default function Dashboard() {
               />
             </button>
             {showProfileMenu && (
-              <div className="absolute right-0 mt-2 w-56 bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-2xl z-50">
+              <div className="absolute right-0 mt-2 w-72 sm:w-80 bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-2xl z-50 max-h-[80vh] overflow-y-auto">
                 <p className="text-sm font-semibold truncate">
                   {user.full_name}
                 </p>
                 <p className="text-xs text-slate-400 truncate mb-3">
                   {user.email}
                 </p>
+
+                {/* 🤖 User Algo Trading Quick Settings */}
+                {userAlgoSettings.length > 0 && (
+                  <div className="bg-violet-950/20 border border-violet-500/20 rounded-2xl p-3 mb-3">
+                    <p className="text-xs font-bold text-violet-300 mb-2 flex items-center gap-1.5">
+                      <span>🤖</span> Algo Auto-Trade Settings
+                    </p>
+                    <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                      {userAlgoSettings.map((s) => (
+                        <div
+                          key={`${s.strategy_key}-${s.index_name}`}
+                          className="flex items-center justify-between bg-slate-950/60 rounded-xl p-2"
+                        >
+                          <span className="text-[10px] text-slate-300 font-medium truncate max-w-[120px]">
+                            {s.nickname || s.strategy_key} — {s.index_name}
+                          </span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <select
+                              value={s.lot_size}
+                              onChange={(e) =>
+                                handleSaveUserAlgoSetting(
+                                  s.strategy_key,
+                                  s.index_name,
+                                  s.auto_paper_trade,
+                                  parseInt(e.target.value, 10),
+                                )
+                              }
+                              className="bg-slate-800 text-[10px] text-slate-200 rounded px-1.5 py-0.5 border border-slate-700"
+                            >
+                              {[1, 2, 5, 10].map((l) => (
+                                <option key={l} value={l}>
+                                  {l}L
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              onClick={() =>
+                                handleSaveUserAlgoSetting(
+                                  s.strategy_key,
+                                  s.index_name,
+                                  !s.auto_paper_trade,
+                                  s.lot_size,
+                                )
+                              }
+                              className={`w-9 h-4.5 rounded-full relative transition-colors ${
+                                s.auto_paper_trade
+                                  ? "bg-violet-500"
+                                  : "bg-slate-700"
+                              }`}
+                            >
+                              <span
+                                className="absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-all"
+                                style={{
+                                  left: s.auto_paper_trade ? "18px" : "2px",
+                                }}
+                              ></span>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <button
                   onClick={logout}
                   className="w-full flex items-center justify-center gap-2 bg-red-500/10 text-red-400 border border-red-500/30 py-1.5 rounded-xl text-xs font-semibold"
@@ -1235,6 +1416,131 @@ export default function Dashboard() {
                       ? "11 strategies scanning jaari hai... abhi tak koi setup nahi mila."
                       : "Market khulne par yahan live signals dikhna shuru honge."}
                   </div>
+                )}
+              </div>
+            </div>
+
+            {/* 🤖 Algo Trade (Verified Signals) Card */}
+            <div className="bg-gradient-to-br from-violet-950/40 via-slate-900/80 to-slate-900/80 border border-violet-500/30 rounded-3xl p-4 md:p-6 mb-6 shadow-lg shadow-violet-950/20">
+              <h2 className="text-sm md:text-lg font-bold text-slate-100 mb-3 flex items-center gap-2">
+                <span>🤖</span> Algo Trade (Verified Signals)
+              </h2>
+              <div className="max-h-[360px] overflow-y-auto space-y-1.5 pr-1">
+                {algoSignals.length > 0 ? (
+                  sortDateKeysDesc(groupSignalsByDate(algoSignals)).map(
+                    (dateKey) => {
+                      const dayList = groupSignalsByDate(algoSignals)[dateKey];
+                      const expanded = isAlgoDateExpanded(dateKey);
+                      return (
+                        <div key={dateKey}>
+                          <div
+                            onClick={() => toggleAlgoDateExpand(dateKey)}
+                            className="flex items-center justify-between bg-slate-900/70 rounded-xl px-2.5 py-1.5 cursor-pointer hover:bg-slate-800/60 transition-all"
+                          >
+                            <span className="text-[10px] font-bold text-slate-300 flex items-center gap-1.5">
+                              <span className="text-slate-500">
+                                {expanded ? "▾" : "▸"}
+                              </span>
+                              {formatDateKey(dateKey)}
+                              <span className="text-slate-600">
+                                ({dayList.length})
+                              </span>
+                            </span>
+                          </div>
+                          {expanded &&
+                            dayList.map((sig, idx) => {
+                              const liveLtp = optionLtpStore[sig.security_id];
+                              const hasLtp =
+                                typeof liveLtp === "number" && liveLtp > 0;
+                              return (
+                                <div
+                                  key={sig._id || idx}
+                                  className="bg-slate-950/60 border border-violet-800/40 rounded-2xl p-3 mt-1.5"
+                                >
+                                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                    <span className="text-xs font-bold text-slate-200">
+                                      {sig.index_name}
+                                    </span>
+                                    <span
+                                      className={`text-xs font-bold ${
+                                        sig.signal === "BUY CALL"
+                                          ? "text-emerald-400"
+                                          : "text-red-400"
+                                      }`}
+                                    >
+                                      {sig.signal}
+                                    </span>
+                                    <span className="text-xs text-slate-400">
+                                      {sig.strike}
+                                    </span>
+                                    <span
+                                      className={`px-2 py-0.5 rounded text-[9px] font-bold ${
+                                        sig.status === "TARGET_HIT"
+                                          ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+                                          : sig.status === "SL_HIT"
+                                            ? "bg-red-500/20 text-red-400 border border-red-500/40"
+                                            : "bg-violet-500/20 text-violet-300 border border-violet-500/30 animate-pulse"
+                                      }`}
+                                    >
+                                      {sig.status}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-3 text-[10px] text-slate-500 flex-wrap mb-2">
+                                    <span>
+                                      Entry{" "}
+                                      <b className="text-cyan-400">
+                                        ₹{sig.entry_price}
+                                      </b>
+                                    </span>
+                                    <span>
+                                      SL{" "}
+                                      <b className="text-red-400">
+                                        ₹{sig.stop_loss}
+                                      </b>
+                                    </span>
+                                    <span>
+                                      Target{" "}
+                                      <b className="text-emerald-400">
+                                        ₹{sig.shz_upper}
+                                      </b>
+                                    </span>
+                                    {hasLtp && (
+                                      <span>
+                                        LTP{" "}
+                                        <b className="text-slate-200">
+                                          ₹{liveLtp}
+                                        </b>
+                                      </span>
+                                    )}
+                                  </div>
+                                  <button
+                                    onClick={() =>
+                                      handleExecuteScannerSignal(sig)
+                                    }
+                                    disabled={executedScannerSignalIds.includes(
+                                      sig._id,
+                                    )}
+                                    className={`px-3 py-1 rounded text-[10px] font-bold transition-all ${
+                                      executedScannerSignalIds.includes(sig._id)
+                                        ? "bg-slate-700 text-slate-400 cursor-not-allowed"
+                                        : "bg-violet-500 hover:bg-violet-400 text-slate-950"
+                                    }`}
+                                  >
+                                    {executedScannerSignalIds.includes(sig._id)
+                                      ? "✅ Executed"
+                                      : "Execute Paper Trade"}
+                                  </button>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      );
+                    },
+                  )
+                ) : (
+                  <p className="text-center py-6 text-xs text-slate-500">
+                    Abhi tak koi algo-verified signal nahi aaya.
+                  </p>
                 )}
               </div>
             </div>
@@ -1758,7 +2064,10 @@ export default function Dashboard() {
                 onClick={() => {
                   const next = !showIndexPerformance;
                   setShowIndexPerformance(next);
-                  if (next) fetchIndexPerformance();
+                  if (next) {
+                    fetchIndexPerformance();
+                    fetchAdminAlgoWhitelist();
+                  }
                 }}
                 className="bg-cyan-950/30 border border-cyan-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-cyan-950/50 transition-all"
               >
@@ -1904,37 +2213,68 @@ export default function Dashboard() {
                               <th className="p-2">Target</th>
                               <th className="p-2">SL</th>
                               <th className="p-2">Decided</th>
+                              <th className="p-2 text-right">Algo Whitelist</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {strat.indices.map((idx) => (
-                              <tr
-                                key={idx.index_name}
-                                className="border-b border-slate-800/50"
-                              >
-                                <td className="p-2 font-semibold text-slate-200">
-                                  {idx.index_name}
-                                </td>
-                                <td
-                                  className={`p-2 font-extrabold ${
-                                    idx.win_rate_percentage >= 50
-                                      ? "text-emerald-400"
-                                      : "text-red-400"
-                                  }`}
+                            {strat.indices.map((idx) => {
+                              const cleanKey = strat.key.replace("STRAT_", "");
+                              const wItem = adminAlgoWhitelist.find(
+                                (x) =>
+                                  x.strategy_key === cleanKey &&
+                                  x.index_name === idx.index_name,
+                              );
+                              const isWhitelisted = !!wItem?.enabled;
+
+                              return (
+                                <tr
+                                  key={idx.index_name}
+                                  className="border-b border-slate-800/50"
                                 >
-                                  {idx.win_rate_percentage}%
-                                </td>
-                                <td className="p-2 text-emerald-400">
-                                  {idx.target_hit}
-                                </td>
-                                <td className="p-2 text-red-400">
-                                  {idx.sl_hit}
-                                </td>
-                                <td className="p-2 text-slate-400">
-                                  {idx.decided}
-                                </td>
-                              </tr>
-                            ))}
+                                  <td className="p-2 font-semibold text-slate-200">
+                                    {idx.index_name}
+                                  </td>
+                                  <td
+                                    className={`p-2 font-extrabold ${
+                                      idx.win_rate_percentage >= 50
+                                        ? "text-emerald-400"
+                                        : "text-red-400"
+                                    }`}
+                                  >
+                                    {idx.win_rate_percentage}%
+                                  </td>
+                                  <td className="p-2 text-emerald-400">
+                                    {idx.target_hit}
+                                  </td>
+                                  <td className="p-2 text-red-400">
+                                    {idx.sl_hit}
+                                  </td>
+                                  <td className="p-2 text-slate-400">
+                                    {idx.decided}
+                                  </td>
+                                  <td className="p-2 text-right">
+                                    <button
+                                      onClick={() =>
+                                        handleToggleAlgoWhitelist(
+                                          cleanKey,
+                                          idx.index_name,
+                                          isWhitelisted,
+                                        )
+                                      }
+                                      className={`text-[9px] px-2 py-0.5 rounded font-bold transition-all ${
+                                        isWhitelisted
+                                          ? "bg-violet-500/20 text-violet-300 border border-violet-500/40"
+                                          : "bg-slate-800 text-slate-400 hover:text-slate-200"
+                                      }`}
+                                    >
+                                      {isWhitelisted
+                                        ? "✅ Whitelisted"
+                                        : "➕ Add to Algo"}
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -2142,6 +2482,74 @@ export default function Dashboard() {
                       </div>
                     </div>
                   </div>
+                </div>
+
+                {/* 🤖 Algo Trade Accuracy Card */}
+                <div className="bg-gradient-to-br from-violet-900/40 to-slate-900/80 border border-violet-500/30 rounded-3xl p-5 md:p-6 mb-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-base md:text-lg font-bold text-slate-100 flex items-center gap-2">
+                      <span>🤖</span> Algo Trade Accuracy
+                    </h3>
+                    <div className="text-right">
+                      <p className="text-xs text-slate-400 mb-0.5">Win Rate</p>
+                      <p
+                        className={`text-3xl font-extrabold ${
+                          algoAccuracyStats.win_rate_percentage >= 50
+                            ? "text-emerald-400"
+                            : "text-red-400"
+                        }`}
+                      >
+                        {algoAccuracyStats.win_rate_percentage}%
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    <div className="bg-slate-950/50 rounded-xl p-3">
+                      <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                        Confirmed
+                      </p>
+                      <p className="text-lg font-bold text-slate-100">
+                        {algoAccuracyStats.total_confirmed}
+                      </p>
+                    </div>
+                    <div className="bg-slate-950/50 rounded-xl p-3">
+                      <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                        Target Hit
+                      </p>
+                      <p className="text-lg font-bold text-emerald-400">
+                        {algoAccuracyStats.target_hit}
+                      </p>
+                    </div>
+                    <div className="bg-slate-950/50 rounded-xl p-3">
+                      <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                        SL Hit
+                      </p>
+                      <p className="text-lg font-bold text-red-400">
+                        {algoAccuracyStats.sl_hit}
+                      </p>
+                    </div>
+                    <div className="bg-slate-950/50 rounded-xl p-3">
+                      <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                        Active
+                      </p>
+                      <p className="text-lg font-bold text-cyan-400">
+                        {algoAccuracyStats.active}
+                      </p>
+                    </div>
+                    <div className="bg-slate-950/50 rounded-xl p-3">
+                      <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                        Rejected
+                      </p>
+                      <p className="text-lg font-bold text-amber-400">
+                        {algoAccuracyStats.total_rejected}
+                      </p>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-3">
+                    "Rejected" = signals jo verification-window me
+                    price-reversal ki wajah se algo-trade nahi bane (30s
+                    confirmation layer ne filter kiya).
+                  </p>
                 </div>
               </>
             )}

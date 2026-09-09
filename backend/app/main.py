@@ -12,6 +12,7 @@ from app.core.database import connect_to_mongo, close_mongo_connection
 from app.services.dhan_websocket import dhan_ws_client
 from app.services.eod_scheduler import eod_auto_square_off_loop
 from app.services.strategy_engine import strategy_engine_loop
+from app.services.algo_verification import algo_verification_loop
 from app.services.strategies import batch1, batch2, batch3, batch4  # noqa: F401 — import registers strategies
 from app.api.v1.endpoints import signals, market_data, auth
 from app.api.v1.endpoints import paper_trade
@@ -47,12 +48,16 @@ async def lifespan(app: FastAPI):
     strategy_task = asyncio.create_task(strategy_engine_loop(broadcast_callback=global_broadcast))
     logger.info("🎯 Strategy Engine Task Initialized in Background (12 strategies, including ORB Breaker).")
 
+    algo_task = asyncio.create_task(algo_verification_loop(broadcast_callback=global_broadcast))
+    logger.info("🤖 Algo Verification Engine Task Initialized in Background.")
+
     yield
 
     logger.info("🛑 Shutting down OptionSaathi Engine...")
     ws_task.cancel()
     eod_task.cancel()
     strategy_task.cancel()
+    algo_task.cancel()
     await close_mongo_connection()
     logger.info("✅ Graceful Shutdown Complete.")
 
