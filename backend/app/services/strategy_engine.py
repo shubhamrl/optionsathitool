@@ -10,6 +10,7 @@ from app.engine.confluence_math import calculate_option_greeks
 from app.engine.risk_manager import risk_manager
 from app.services.feature_logger import log_signal_features
 from app.services.auto_trader import auto_execute_for_all_users
+from app.services.algo_verification import queue_for_verification
 from app.services.token_registry import fetch_expiry_list, fetch_full_option_chain_data
 
 logger = logging.getLogger(__name__)
@@ -304,6 +305,9 @@ async def _execute_strategy_signal(
     logger.info(f"🎯 [{strategy_nickname}] {index_name} {signal} {atm_strike}{selected_type} @ ₹{entry_price}")
 
     await auto_execute_for_all_users(db, signal_doc, source=breakout_status)
+
+    # 🤖 Purely additive — does NOT delay or alter this signal's normal flow.
+    await queue_for_verification(db, signal_doc, strategy_key)
 
     if broadcast_callback:
         signal_doc["created_at"] = signal_doc["created_at"].isoformat()
