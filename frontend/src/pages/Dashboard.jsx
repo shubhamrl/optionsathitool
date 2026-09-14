@@ -238,6 +238,26 @@ export default function Dashboard() {
   const [algoSignals, setAlgoSignals] = useState([]);
   const [userAlgoSettings, setUserAlgoSettings] = useState([]);
   const [adminAlgoWhitelist, setAdminAlgoWhitelist] = useState([]);
+  const [algoMasterEnabled, setAlgoMasterEnabled] = useState(false);
+
+  const fetchAlgoMasterToggle = async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/signals/algo-master-toggle`);
+      if (res.data && res.data.success) setAlgoMasterEnabled(res.data.enabled);
+    } catch (e) {}
+  };
+
+  const handleToggleAlgoMaster = async () => {
+    try {
+      const res = await axios.post(`${API_BASE_URL}/signals/algo-master-toggle`, {
+        enabled: !algoMasterEnabled,
+        lot_size: 1,
+      });
+      if (res.data && res.data.success) setAlgoMasterEnabled(!algoMasterEnabled);
+    } catch (e) {
+      alert("Toggle failed.");
+    }
+  };
 
   const fetchAlgoSignals = async () => {
     try {
@@ -301,6 +321,19 @@ export default function Dashboard() {
   };
 
   // 🤖 Algo Accuracy Stats & Fetch
+  const [algoAccuracyDaily, setAlgoAccuracyDaily] = useState([]);
+  const [showAlgoAccuracyDaily, setShowAlgoAccuracyDaily] = useState(false);
+
+  const fetchAlgoAccuracyDaily = async () => {
+    try {
+      const res = await axios.get(
+        `${API_BASE_URL}/signals/admin/algo-accuracy-daily`,
+      );
+      if (res.data && res.data.success)
+        setAlgoAccuracyDaily(res.data.days || []);
+    } catch (e) {}
+  };
+
   const [algoAccuracyStats, setAlgoAccuracyStats] = useState({
     total_confirmed: 0,
     target_hit: 0,
@@ -376,13 +409,20 @@ export default function Dashboard() {
   const handleExecuteScannerSignal = async (sig) => {
     if (executedScannerSignalIds.includes(sig._id)) return;
     try {
+      // 🎯 Real trading jaisa: entry hamesha CURRENT live LTP par hoti hai,
+      // purane signal-generation-time ke price par nahi — SL/Target wahi
+      // rehte hain jo signal ne originally calculate kiye the.
+      const liveLtp = optionLtpStore[sig.security_id];
+      const executionEntry =
+        typeof liveLtp === "number" && liveLtp > 0 ? liveLtp : sig.entry_price;
+
       const res = await axios.post(`${API_BASE_URL}/paper/place-trade`, {
         index_name: sig.index_name,
         signal: sig.signal,
         strike: sig.strike,
         security_id: sig.security_id,
         signal_id: sig._id,
-        entry_price: sig.entry_price,
+        entry_price: executionEntry,
         stop_loss: sig.stop_loss,
         target1: sig.shz_upper,
         lots: 1,
@@ -411,6 +451,7 @@ export default function Dashboard() {
   const fetchAdminData = async () => {
     try {
       fetchAlgoAccuracy();
+      fetchAlgoAccuracyDaily();
       const [statsRes, usersRes, accuracyRes] = await Promise.all([
         axios.get(`${API_BASE_URL}/signals/admin/today-stats`),
         axios.get(`${API_BASE_URL}/auth/admin/users-list`),
@@ -614,6 +655,7 @@ export default function Dashboard() {
     if (!user) return;
     fetchAlgoSignals();
     fetchUserAlgoSettings();
+    fetchAlgoMasterToggle();
     const interval = setInterval(fetchAlgoSignals, 30000);
     return () => clearInterval(interval);
   }, [user]);
@@ -1422,9 +1464,24 @@ export default function Dashboard() {
 
             {/* 🤖 Algo Trade (Verified Signals) Card */}
             <div className="bg-gradient-to-br from-violet-950/40 via-slate-900/80 to-slate-900/80 border border-violet-500/30 rounded-3xl p-4 md:p-6 mb-6 shadow-lg shadow-violet-950/20">
-              <h2 className="text-sm md:text-lg font-bold text-slate-100 mb-3 flex items-center gap-2">
-                <span>🤖</span> Algo Trade (Verified Signals)
-              </h2>
+              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                <h2 className="text-sm md:text-lg font-bold text-slate-100 flex items-center gap-2">
+                  <span>🤖</span> Algo Trade (Verified Signals)
+                </h2>
+                <button
+                  onClick={handleToggleAlgoMaster}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+                    algoMasterEnabled
+                      ? "bg-violet-500 text-slate-950"
+                      : "bg-slate-800 text-slate-400"
+                  }`}
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${algoMasterEnabled ? "bg-emerald-400" : "bg-slate-600"}`}
+                  ></span>
+                  Auto Paper-Trade: {algoMasterEnabled ? "ON" : "OFF"}
+                </button>
+              </div>
               <div className="max-h-[360px] overflow-y-auto space-y-1.5 pr-1">
                 {algoSignals.length > 0 ? (
                   sortDateKeysDesc(groupSignalsByDate(algoSignals)).map(
@@ -1457,6 +1514,18 @@ export default function Dashboard() {
                                   key={sig._id || idx}
                                   className="bg-slate-950/60 border border-violet-800/40 rounded-2xl p-3 mt-1.5"
                                 >
+                                  <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+                                    <span className="text-[9px] md:text-[10px] font-bold text-violet-300 bg-violet-500/10 px-1.5 py-0.5 rounded">
+                                      {leaderboardMap[sig.breakout_status]
+                                        ?.nickname ||
+                                        sig.breakout_status
+                                          ?.replace("STRAT_", "")
+                                          .replace(/_/g, " ")}
+                                    </span>
+                                    <WinRateBadge
+                                      breakoutStatus={sig.breakout_status}
+                                    />
+                                  </div>
                                   <div className="flex items-center gap-2 mb-1 flex-wrap">
                                     <span className="text-xs font-bold text-slate-200">
                                       {sig.index_name}
@@ -2550,6 +2619,71 @@ export default function Dashboard() {
                     price-reversal ki wajah se algo-trade nahi bane (30s
                     confirmation layer ne filter kiya).
                   </p>
+                  <button
+                    onClick={() => {
+                      const next = !showAlgoAccuracyDaily;
+                      setShowAlgoAccuracyDaily(next);
+                      if (next) fetchAlgoAccuracyDaily();
+                    }}
+                    className="mt-3 text-xs font-bold text-violet-300 flex items-center gap-1"
+                  >
+                    {showAlgoAccuracyDaily ? "▾ Hide" : "▸ Show"} Daily
+                    Breakdown (Last 7 Days)
+                  </button>
+                  {showAlgoAccuracyDaily && (
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="w-full text-left text-xs text-slate-300 min-w-[400px]">
+                        <thead className="bg-slate-950/60 text-slate-500 border-b border-slate-800 uppercase text-[9px]">
+                          <tr>
+                            <th className="p-2">Date</th>
+                            <th className="p-2">Confirmed</th>
+                            <th className="p-2">Target</th>
+                            <th className="p-2">SL</th>
+                            <th className="p-2">Win Rate</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {algoAccuracyDaily.length > 0 ? (
+                            algoAccuracyDaily.map((d) => (
+                              <tr
+                                key={d.date}
+                                className="border-b border-slate-800/50"
+                              >
+                                <td className="p-2 font-semibold text-slate-200">
+                                  {d.date}
+                                </td>
+                                <td className="p-2 text-slate-400">
+                                  {d.confirmed}
+                                </td>
+                                <td className="p-2 text-emerald-400">
+                                  {d.target_hit}
+                                </td>
+                                <td className="p-2 text-red-400">
+                                  {d.sl_hit}
+                                </td>
+                                <td
+                                  className={`p-2 font-extrabold ${d.win_rate_percentage >= 50 ? "text-emerald-400" : "text-red-400"}`}
+                                >
+                                  {d.confirmed > 0
+                                    ? `${d.win_rate_percentage}%`
+                                    : "—"}
+                                </td>
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td
+                                colSpan="5"
+                                className="p-4 text-center text-slate-500"
+                              >
+                                Loading...
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               </>
             )}

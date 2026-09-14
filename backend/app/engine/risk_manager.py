@@ -69,10 +69,13 @@ class DynamicRiskManager:
             t1_multiplier = round(clamp(1.9 + (iv_factor - 1.0) * 0.3, 1.6, 2.2), 2)
             t2_multiplier = round(clamp(2.4 + (iv_factor - 1.0) * 0.5, 2.0, 3.0), 2)
         else:
-            # Standard Confluence Signal (6.0+ Score): Optimal RR
+            # Standard Confluence Signal (6.0+ Score): Tightened RR (was 1.6/2.8) —
+            # signals were frequently reversing just before hitting the wider
+            # original target. SL unchanged; only the reward-side multiplier is
+            # reduced, still derived from live Delta/ATR (not hardcoded points).
             premium_risk_points = clamp(spot_risk_points * abs_delta + 2.0, min_sl, max_sl)
-            t1_multiplier = 1.6
-            t2_multiplier = 2.8
+            t1_multiplier = 1.3
+            t2_multiplier = 2.0
 
         premium_risk_points = round(premium_risk_points, 1)
 

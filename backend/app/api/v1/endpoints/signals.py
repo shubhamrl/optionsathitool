@@ -769,6 +769,38 @@ async def save_user_algo_settings(
     return {"success": True, "message": "Algo setting saved."}
 
 
+@router.get("/admin/algo-accuracy-daily")
+async def get_algo_accuracy_daily(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    from bson import ObjectId
+    days_data = []
+    for days_ago in range(7):
+        start_utc, end_utc, label = _ist_single_day_bounds(days_ago)
+
+        confirmed_cursor = db.algo_confirmed_signals.find({"confirmed_at": {"$gte": start_utc, "$lt": end_utc}})
+        confirmed_docs = await confirmed_cursor.to_list(length=500)
+        signal_ids = []
+        for c in confirmed_docs:
+            try:
+                signal_ids.append(ObjectId(c["signal_id"]))
+            except Exception:
+                continue
+
+        if not signal_ids:
+            days_data.append({"date": label, "confirmed": 0, "target_hit": 0, "sl_hit": 0, "win_rate_percentage": 0.0})
+            continue
+
+        t_hit = await db.signals.count_documents({"_id": {"$in": signal_ids}, "status": "TARGET_HIT"})
+        s_hit = await db.signals.count_documents({"_id": {"$in": signal_ids}, "status": "SL_HIT"})
+        decided = t_hit + s_hit
+        wr = round((t_hit / decided) * 100, 1) if decided > 0 else 0.0
+        days_data.append({"date": label, "confirmed": len(signal_ids), "target_hit": t_hit, "sl_hit": s_hit, "win_rate_percentage": wr})
+
+    return {"success": True, "days": days_data}
+
+
 @router.get("/admin/algo-accuracy")
 async def get_algo_accuracy_stats(
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -820,6 +852,40 @@ async def get_algo_accuracy_stats(
             "total_rejected": total_rejected
         }
     }
+
+
+class AlgoMasterToggleRequest(BaseModel):
+    enabled: bool
+    lot_size: int = 1
+
+
+@router.get("/algo-master-toggle")
+async def get_algo_master_toggle(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    user_id = str(current_user["_id"])
+    doc = await db.user_algo_master_settings.find_one({"_id": user_id})
+    return {
+        "success": True,
+        "enabled": bool(doc.get("enabled", False)) if doc else False,
+        "lot_size": doc.get("lot_size", 1) if doc else 1
+    }
+
+
+@router.post("/algo-master-toggle")
+async def set_algo_master_toggle(
+    payload: AlgoMasterToggleRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    user_id = str(current_user["_id"])
+    await db.user_algo_master_settings.update_one(
+        {"_id": user_id},
+        {"$set": {"enabled": payload.enabled, "lot_size": payload.lot_size, "updated_at": datetime.utcnow()}},
+        upsert=True
+    )
+    return {"success": True, "message": f"Algo auto-trade {'ON' if payload.enabled else 'OFF'}."}
 
 
 @router.post("/admin/reset-accuracy-tracking")
