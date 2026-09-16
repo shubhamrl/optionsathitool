@@ -225,6 +225,15 @@ export default function Dashboard() {
   const [showIndexPerformance, setShowIndexPerformance] = useState(false);
   const [mlReadiness, setMlReadiness] = useState(null);
   const [showMlReadiness, setShowMlReadiness] = useState(false);
+  const [mlTraining, setMlTraining] = useState(false);
+  const [mlShadowPerformance, setMlShadowPerformance] = useState(null);
+
+  const fetchMlShadowPerformance = async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/signals/admin/ml-shadow-performance`);
+      if (res.data && res.data.success) setMlShadowPerformance(res.data);
+    } catch (e) {}
+  };
 
   const fetchMlReadiness = async () => {
     try {
@@ -2263,6 +2272,66 @@ export default function Dashboard() {
                         ))}
                       </div>
                     </div>
+
+                    <button
+                      onClick={async () => {
+                        setMlTraining(true);
+                        try {
+                          const res = await axios.post(`${API_BASE_URL}/signals/admin/train-ml-model`);
+                          if (res.data && res.data.success) {
+                            alert(`✅ Trained on ${res.data.report.n_samples} samples! Val Accuracy: ${(res.data.report.val_accuracy * 100).toFixed(1)}%`);
+                            fetchMlShadowPerformance();
+                          } else {
+                            alert(res.data?.message || "Training failed.");
+                          }
+                        } catch (e) {
+                          alert("Training request failed.");
+                        } finally {
+                          setMlTraining(false);
+                        }
+                      }}
+                      disabled={mlTraining}
+                      className="w-full bg-gradient-to-r from-pink-500 to-violet-600 text-slate-950 font-extrabold px-6 py-2.5 rounded-xl text-xs disabled:opacity-50"
+                    >
+                      {mlTraining ? "Training..." : "🧠 Train Model Now"}
+                    </button>
+
+                    {mlShadowPerformance && (
+                      <div className="mt-4">
+                        <p className="text-xs font-bold text-slate-400 mb-2">
+                          Shadow-Mode Performance (Confidence Bucket vs Actual Win Rate)
+                        </p>
+                        {mlShadowPerformance.model_info && (
+                          <p className="text-[10px] text-slate-500 mb-2">
+                            Model trained on {mlShadowPerformance.model_info.n_samples} samples | Baseline WR: {(mlShadowPerformance.model_info.baseline_win_rate * 100).toFixed(1)}%
+                          </p>
+                        )}
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs text-slate-300 min-w-[350px]">
+                            <thead className="bg-slate-950/60 text-slate-500 border-b border-slate-800 uppercase text-[9px]">
+                              <tr>
+                                <th className="p-2">Confidence</th>
+                                <th className="p-2">Target</th>
+                                <th className="p-2">SL</th>
+                                <th className="p-2">Win Rate</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {mlShadowPerformance.buckets.map((b) => (
+                                <tr key={b.range} className="border-b border-slate-800/50">
+                                  <td className="p-2 font-semibold text-slate-200">{b.range}</td>
+                                  <td className="p-2 text-emerald-400">{b.target_hit}</td>
+                                  <td className="p-2 text-red-400">{b.sl_hit}</td>
+                                  <td className={`p-2 font-extrabold ${b.win_rate_percentage >= 50 ? "text-emerald-400" : "text-red-400"}`}>
+                                    {b.decided > 0 ? `${b.win_rate_percentage}%` : "—"}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <p className="text-xs text-slate-500 text-center py-4">
