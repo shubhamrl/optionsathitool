@@ -302,6 +302,18 @@ async def _execute_strategy_signal(
         selected_type=selected_type, momentum_bias=selected_type, orb_triggered=None
     )
 
+    # 🧠 SHADOW MODE — predicts confidence for tracking/comparison only, never
+    # gates or blocks this signal. Silently does nothing if no model trained yet.
+    from app.services.ml_model import predict_confidence
+    from datetime import datetime as _dt
+    _now_hm = int(_dt.utcnow().strftime("%H%M"))
+    predicted_conf = await predict_confidence(
+        db, index_name=index_name, strategy_key=strategy_key, delta=greeks["delta"],
+        iv=iv, selected_type=selected_type, mom_bias=selected_type, hm=_now_hm
+    )
+    if predicted_conf is not None:
+        await db.signals.update_one({"_id": ObjectId(signal_id)}, {"$set": {"predicted_confidence": predicted_conf}})
+
     logger.info(f"🎯 [{strategy_nickname}] {index_name} {signal} {atm_strike}{selected_type} @ ₹{entry_price}")
 
     await auto_execute_for_all_users(db, signal_doc, source=breakout_status)

@@ -940,6 +940,47 @@ async def get_ml_readiness(
     }
 
 
+@router.post("/admin/train-ml-model")
+async def train_ml_model_endpoint(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    from app.services.ml_model import train_model
+    result = await train_model(db)
+    return result
+
+
+@router.get("/admin/ml-shadow-performance")
+async def get_ml_shadow_performance(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """Compares the model's predicted_confidence (logged on new signals since
+    training, in SHADOW MODE — never used to gate anything yet) against actual
+    outcomes, bucketed by confidence range."""
+    buckets = [(0.0, 0.4), (0.4, 0.5), (0.5, 0.6), (0.6, 0.7), (0.7, 1.01)]
+    results = []
+    for lo, hi in buckets:
+        t_hit = await db.signals.count_documents({"predicted_confidence": {"$gte": lo, "$lt": hi}, "status": "TARGET_HIT"})
+        s_hit = await db.signals.count_documents({"predicted_confidence": {"$gte": lo, "$lt": hi}, "status": "SL_HIT"})
+        decided = t_hit + s_hit
+        wr = round((t_hit / decided) * 100, 1) if decided > 0 else 0.0
+        results.append({"range": f"{int(lo*100)}-{int(hi*100)}%", "target_hit": t_hit, "sl_hit": s_hit, "decided": decided, "win_rate_percentage": wr})
+
+    model_doc = await db.ml_models.find_one({"_id": "target_predictor_v1"})
+    model_info = None
+    if model_doc:
+        model_info = {
+            "trained_at": model_doc["trained_at"].isoformat() if model_doc.get("trained_at") else None,
+            "n_samples": model_doc.get("n_samples"),
+            "val_accuracy": model_doc.get("val_accuracy"),
+            "baseline_win_rate": model_doc.get("baseline_win_rate"),
+            "filtered_win_rate_at_60pct_threshold": model_doc.get("filtered_win_rate_at_60pct_threshold"),
+            "filtered_coverage_at_60pct_threshold": model_doc.get("filtered_coverage_at_60pct_threshold"),
+        }
+    return {"success": True, "buckets": results, "model_info": model_info}
+
+
 @router.post("/admin/reset-accuracy-tracking")
 async def reset_accuracy_tracking(
     current_user: Dict[str, Any] = Depends(get_current_user),
