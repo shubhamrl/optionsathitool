@@ -78,6 +78,7 @@ async def _auto_execute_algo_trade(db, signal_doc: Dict[str, Any], strategy_key:
                 "user_id": user_id, "security_id": security_id, "status": "OPEN"
             })
             if existing_open:
+                logger.info(f"🤖 [ALGO SKIP] user {user_id}: already has an OPEN position on {security_id}.")
                 continue
 
             quantity = lot_size * LOT_SIZES.get(index_name, 25)
@@ -86,6 +87,7 @@ async def _auto_execute_algo_trade(db, signal_doc: Dict[str, Any], strategy_key:
             wallet = await db.paper_wallets.find_one({"user_id": user_id})
             current_balance = wallet.get("balance", DEFAULT_VIRTUAL_FUNDS) if wallet else DEFAULT_VIRTUAL_FUNDS
             if current_balance < required_margin:
+                logger.info(f"🤖 [ALGO SKIP] user {user_id}: insufficient balance (₹{current_balance:.2f} < required ₹{required_margin:.2f}).")
                 continue
 
             await db.paper_wallets.update_one(

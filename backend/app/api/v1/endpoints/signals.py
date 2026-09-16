@@ -888,6 +888,58 @@ async def set_algo_master_toggle(
     return {"success": True, "message": f"Algo auto-trade {'ON' if payload.enabled else 'OFF'}."}
 
 
+@router.get("/admin/ml-readiness")
+async def get_ml_readiness(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """
+    Checks how much labeled training data exists in signal_features (built by
+    feature_logger.py) before we invest time building the prediction model.
+    OUTCOME codes: 0=pending, 1=TARGET_HIT, 2=SL_HIT, 3=EXPIRED_PROFIT, 4=EXPIRED_LOSS.
+    Only outcomes 1 and 2 are usable as clean training labels (a clear win/loss);
+    3/4 (EOD-forced closes) are ambiguous and excluded from the initial dataset.
+    """
+    total = await db.signal_features.count_documents({})
+    target_hit = await db.signal_features.count_documents({"out": 1})
+    sl_hit = await db.signal_features.count_documents({"out": 2})
+    pending = await db.signal_features.count_documents({"out": 0})
+    expired = await db.signal_features.count_documents({"out": {"$in": [3, 4]}})
+
+    usable = target_hit + sl_hit
+
+    # Coverage check — is the usable data spread across different modes
+    # (standard/scalp/strategy_*) and indices, or concentrated in just one?
+    mode_pipeline = [
+        {"$match": {"out": {"$in": [1, 2]}}},
+        {"$group": {"_id": "$mode", "count": {"$sum": 1}}}
+    ]
+    mode_breakdown = await db.signal_features.aggregate(mode_pipeline).to_list(length=50)
+
+    idx_pipeline = [
+        {"$match": {"out": {"$in": [1, 2]}}},
+        {"$group": {"_id": "$idx", "count": {"$sum": 1}}}
+    ]
+    idx_breakdown = await db.signal_features.aggregate(idx_pipeline).to_list(length=10)
+
+    MIN_RECOMMENDED = 300
+    return {
+        "success": True,
+        "readiness": {
+            "total_records": total,
+            "usable_for_training": usable,
+            "target_hit": target_hit,
+            "sl_hit": sl_hit,
+            "pending": pending,
+            "expired_excluded": expired,
+            "min_recommended": MIN_RECOMMENDED,
+            "is_ready": usable >= MIN_RECOMMENDED,
+            "mode_breakdown": [{"mode": m["_id"], "count": m["count"]} for m in mode_breakdown],
+            "index_breakdown": [{"index": i["_id"], "count": i["count"]} for i in idx_breakdown]
+        }
+    }
+
+
 @router.post("/admin/reset-accuracy-tracking")
 async def reset_accuracy_tracking(
     current_user: Dict[str, Any] = Depends(get_current_user),

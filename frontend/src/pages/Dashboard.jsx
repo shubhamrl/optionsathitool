@@ -223,6 +223,15 @@ export default function Dashboard() {
 
   const [indexPerformance, setIndexPerformance] = useState([]);
   const [showIndexPerformance, setShowIndexPerformance] = useState(false);
+  const [mlReadiness, setMlReadiness] = useState(null);
+  const [showMlReadiness, setShowMlReadiness] = useState(false);
+
+  const fetchMlReadiness = async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/signals/admin/ml-readiness`);
+      if (res.data && res.data.success) setMlReadiness(res.data.readiness);
+    } catch (e) {}
+  };
 
   const fetchIndexPerformance = async () => {
     try {
@@ -2088,7 +2097,7 @@ export default function Dashboard() {
         {activeTab === "ADMIN" && (
           <div className="space-y-6">
             {/* Toggle buttons for the collapsible sections */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
               <button
                 onClick={() => setShowAccuracyDetails((v) => !v)}
                 className="bg-indigo-950/30 border border-indigo-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-indigo-950/50 transition-all"
@@ -2147,7 +2156,121 @@ export default function Dashboard() {
                   {showIndexPerformance ? "▾" : "▸"}
                 </span>
               </button>
+              <button
+                onClick={() => {
+                  const next = !showMlReadiness;
+                  setShowMlReadiness(next);
+                  if (next) fetchMlReadiness();
+                }}
+                className="bg-pink-950/30 border border-pink-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-pink-950/50 transition-all"
+              >
+                <span className="text-sm font-bold text-pink-300 flex items-center gap-2">
+                  🧠 ML Readiness
+                </span>
+                <span className="text-xs text-slate-500">
+                  {showMlReadiness ? "▾" : "▸"}
+                </span>
+              </button>
             </div>
+
+            {showMlReadiness && (
+              <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-4 md:p-6 space-y-4">
+                <h3 className="text-sm md:text-base font-bold text-slate-200">
+                  🧠 ML Model Training Readiness
+                </h3>
+                {mlReadiness ? (
+                  <>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div className="bg-slate-950/50 rounded-xl p-3">
+                        <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                          Usable Records
+                        </p>
+                        <p
+                          className={`text-lg font-bold ${mlReadiness.is_ready ? "text-emerald-400" : "text-amber-400"}`}
+                        >
+                          {mlReadiness.usable_for_training} /{" "}
+                          {mlReadiness.min_recommended}
+                        </p>
+                      </div>
+                      <div className="bg-slate-950/50 rounded-xl p-3">
+                        <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                          Target Hit
+                        </p>
+                        <p className="text-lg font-bold text-emerald-400">
+                          {mlReadiness.target_hit}
+                        </p>
+                      </div>
+                      <div className="bg-slate-950/50 rounded-xl p-3">
+                        <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                          SL Hit
+                        </p>
+                        <p className="text-lg font-bold text-red-400">
+                          {mlReadiness.sl_hit}
+                        </p>
+                      </div>
+                      <div className="bg-slate-950/50 rounded-xl p-3">
+                        <p className="text-[10px] text-slate-500 uppercase mb-0.5">
+                          Pending/Expired
+                        </p>
+                        <p className="text-lg font-bold text-slate-400">
+                          {mlReadiness.pending + mlReadiness.expired_excluded}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div
+                      className={`rounded-xl p-3 text-sm font-bold text-center ${
+                        mlReadiness.is_ready
+                          ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
+                          : "bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                      }`}
+                    >
+                      {mlReadiness.is_ready
+                        ? "✅ Ready — enough data to start training!"
+                        : `⏳ Not ready yet — need ${mlReadiness.min_recommended - mlReadiness.usable_for_training} more decided signals.`}
+                    </div>
+
+                    <div>
+                      <p className="text-xs font-bold text-slate-400 mb-2">
+                        Breakdown by Mode
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {mlReadiness.mode_breakdown.map((m) => (
+                          <span
+                            key={m.mode}
+                            className="bg-slate-950/50 px-3 py-1 rounded-lg text-xs text-slate-300"
+                          >
+                            {m.mode}:{" "}
+                            <b className="text-slate-100">{m.count}</b>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="text-xs font-bold text-slate-400 mb-2">
+                        Breakdown by Index
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {mlReadiness.index_breakdown.map((i) => (
+                          <span
+                            key={i.index}
+                            className="bg-slate-950/50 px-3 py-1 rounded-lg text-xs text-slate-300"
+                          >
+                            {i.index}:{" "}
+                            <b className="text-slate-100">{i.count}</b>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-slate-500 text-center py-4">
+                    Loading...
+                  </p>
+                )}
+              </div>
+            )}
 
             {showDailyPerformance && (
               <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-4 md:p-6 space-y-2">
