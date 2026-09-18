@@ -2169,7 +2169,10 @@ export default function Dashboard() {
                 onClick={() => {
                   const next = !showMlReadiness;
                   setShowMlReadiness(next);
-                  if (next) fetchMlReadiness();
+                  if (next) {
+                    fetchMlReadiness();
+                    fetchMlShadowPerformance();
+                  }
                 }}
                 className="bg-pink-950/30 border border-pink-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-pink-950/50 transition-all"
               >

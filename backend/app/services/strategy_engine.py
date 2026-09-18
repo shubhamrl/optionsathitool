@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Callable
+from bson import ObjectId
 
 from app.core.database import get_database
 from app.core.config import settings
@@ -113,9 +114,13 @@ def _ist_today_bounds():
     return start, start + timedelta(days=1)
 
 
-async def get_today_win_rate(db, breakout_status: str) -> Optional[float]:
-    """Returns today's live win-rate for a strategy, or None if fewer than 3
-    trades decided today (not enough sample to judge yet)."""
+AUTO_DISABLE_MIN_TRADES = 5
+AUTO_DISABLE_WIN_RATE_THRESHOLD = 45.0
+
+
+async def get_today_stats(db, breakout_status: str) -> Dict[str, Any]:
+    """Returns today's decided-count and win-rate for a strategy (no minimum-
+    sample floor here — caller decides thresholds)."""
     start, end = _ist_today_bounds()
     t_hit = await db.signals.count_documents({
         "breakout_status": breakout_status, "status": "TARGET_HIT",
@@ -126,19 +131,47 @@ async def get_today_win_rate(db, breakout_status: str) -> Optional[float]:
         "created_at": {"$gte": start, "$lt": end}
     })
     decided = t_hit + s_hit
-    if decided < 3:
+    win_rate = (t_hit / decided) * 100 if decided > 0 else None
+    return {"decided": decided, "win_rate": win_rate}
+
+
+async def get_today_win_rate(db, breakout_status: str) -> Optional[float]:
+    """Returns today's live win-rate for a strategy, or None if fewer than 3
+    trades decided today (not enough sample to judge yet)."""
+    stats = await get_today_stats(db, breakout_status)
+    if stats["decided"] < 3:
         return None
-    return (t_hit / decided) * 100
+    return stats["win_rate"]
 
 
 async def should_strategy_fire(db, strategy_key: str) -> bool:
-    """A strategy fires normally if it's ON. If turned OFF in ADMIN, it still
-    keeps scanning (data-read continues) but only fires when today's live
-    win-rate has proven itself at 80%+ — everyday 'random' signals stay
-    suppressed while it's off."""
+    """
+    A strategy fires normally if it's ON — UNLESS it auto-qualifies for
+    today's underperformance auto-disable (see below), in which case it gets
+    turned OFF on the spot. If OFF (manually or auto), it still keeps scanning
+    (data-read continues) but only fires when today's live win-rate has
+    proven itself at 80%+ — everyday 'random' signals stay suppressed.
+    """
     toggles = await get_strategy_toggles(db)
-    if toggles.get(strategy_key, True):
+    is_on = toggles.get(strategy_key, True)
+
+    if is_on:
+        # 🔴 Auto-disable check — underperforming strategies get benched
+        # mid-day automatically, without needing manual admin action.
+        stats = await get_today_stats(db, f"STRAT_{strategy_key}")
+        if stats["decided"] >= AUTO_DISABLE_MIN_TRADES and stats["win_rate"] < AUTO_DISABLE_WIN_RATE_THRESHOLD:
+            await db.strategy_settings.update_one(
+                {"_id": strategy_key},
+                {"$set": {"enabled": False, "auto_disabled": True, "auto_disabled_at": datetime.utcnow(),
+                          "auto_disabled_reason": f"{round(stats['win_rate'],1)}% over {stats['decided']} trades today"}},
+                upsert=True
+            )
+            global _toggle_cache_time
+            _toggle_cache_time = None  # force cache refresh on next read
+            logger.warning(f"🔴 [AUTO-DISABLE] {strategy_key} — {round(stats['win_rate'],1)}% win-rate over {stats['decided']} trades today (threshold {AUTO_DISABLE_WIN_RATE_THRESHOLD}%). Turned OFF for the rest of today.")
+            return False
         return True
+
     today_wr = await get_today_win_rate(db, f"STRAT_{strategy_key}")
     return today_wr is not None and today_wr >= 80.0 
 
