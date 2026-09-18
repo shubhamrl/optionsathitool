@@ -306,6 +306,18 @@ async def eod_auto_square_off_loop(broadcast_callback=None):
                 if _last_daily_cleanup_date != today_str:
                     from app.services.dhan_websocket import reset_daily_state
                     reset_daily_state()
+
+                    # 🔄 Re-enable strategies that were AUTO-disabled today for
+                    # underperformance — tomorrow they get a fresh chance.
+                    # Manually-disabled strategies (admin_toggle, no auto_disabled
+                    # flag) are left untouched — that's an explicit admin choice.
+                    result = await db.strategy_settings.update_many(
+                        {"auto_disabled": True},
+                        {"$set": {"enabled": True, "auto_disabled": False}}
+                    )
+                    if result.modified_count:
+                        logger.info(f"🔄 [DAILY RESET] Re-enabled {result.modified_count} auto-disabled strategy/strategies for tomorrow.")
+
                     _last_daily_cleanup_date = today_str
 
         except asyncio.CancelledError:
