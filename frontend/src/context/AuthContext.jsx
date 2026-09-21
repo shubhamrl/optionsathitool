@@ -5,7 +5,7 @@ const AuthContext = createContext();
 
 // 🟢 Dynamic Backend API URL Configuration
 const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-const BACKEND_HOST = isLocal ? 'http://localhost:8000' : 'https://optionsathitool.onrender.com';
+const BACKEND_HOST = isLocal ? 'http://localhost:8000' : 'optionsathitool-od8y.onrender.com';
 const API_BASE_URL = `${BACKEND_HOST}/api/v1`;
 
 export const AuthProvider = ({ children }) => {
