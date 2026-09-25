@@ -329,6 +329,15 @@ async def _execute_strategy_signal(
         target=risk_result["target1"], sl=risk_result["stop_loss"]
     )
 
+   # 🎯 Real price-momentum (not a direction-duplicate) — genuinely independent
+    # signal for the model, since it looks at actual recent candle behavior.
+    # MUST be calculated BEFORE log_signal_features (which was the bug —
+    # log_signal_features previously referenced live_momentum before it was
+    # ever assigned, causing a silent NameError on every single strategy
+    # signal, which is why no new feature-records were saved for days).
+    from app.services.dhan_websocket import get_price_momentum
+    live_momentum = get_price_momentum(index_name)
+
     await log_signal_features(
         db=db, signal_id=signal_id, index_name=index_name, mode=f"strategy_{strategy_key.lower()}",
         pcr=0.0, delta=greeks["delta"], iv=iv, score=6.0,
@@ -338,12 +347,8 @@ async def _execute_strategy_signal(
     # 🧠 SHADOW MODE — predicts confidence for tracking/comparison only, never
     # gates or blocks this signal. Silently does nothing if no model trained yet.
     from app.services.ml_model import predict_confidence
-    from app.services.dhan_websocket import get_price_momentum
     from datetime import datetime as _dt
     _now_hm = int(_dt.utcnow().strftime("%H%M"))
-    # 🎯 Real price-momentum (not a direction-duplicate) — genuinely independent
-    # signal for the model, since it looks at actual recent candle behavior.
-    live_momentum = get_price_momentum(index_name)
     predicted_conf = await predict_confidence(
         db, index_name=index_name, strategy_key=strategy_key, delta=greeks["delta"],
         iv=iv, selected_type=selected_type, mom_bias=live_momentum.get("bias"), hm=_now_hm
