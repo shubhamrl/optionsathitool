@@ -319,9 +319,18 @@ async def get_all_strategy_toggles(
     cursor = db.strategy_settings.find({})
     saved = {}
     async for doc in cursor:
-        saved[doc["_id"]] = doc.get("enabled", True)
+        saved[doc["_id"]] = doc
 
-    toggles = [{"key": s["key"], "nickname": s["nickname"], "enabled": saved.get(s["key"], True)} for s in STRATEGIES]
+    toggles = []
+    for s in STRATEGIES:
+        doc = saved.get(s["key"], {})
+        toggles.append({
+            "key": s["key"],
+            "nickname": s["nickname"],
+            "enabled": doc.get("enabled", True),
+            "permanent_disabled": doc.get("permanent_disabled", False),
+            "auto_disabled": doc.get("auto_disabled", False),
+        })
     return {"success": True, "toggles": toggles}
 
 
@@ -336,12 +345,47 @@ async def set_strategy_toggle(
     current_user: Dict[str, Any] = Depends(get_current_user),
     db=Depends(get_database)
 ):
+    """Regular admin ON/OFF toggle. Turning ON explicitly records today's date
+    as a manual-override, so strategy_engine's auto-disable logic respects
+    this choice for the rest of today instead of immediately re-disabling it
+    on the next scan cycle."""
+    from app.services.strategy_engine import _ist_today_str
+    update_fields = {"enabled": payload.enabled, "updated_at": datetime.utcnow()}
+    if payload.enabled:
+        update_fields["manual_override_date"] = _ist_today_str()
+        update_fields["auto_disabled"] = False
+
     await db.strategy_settings.update_one(
         {"_id": payload.key},
-        {"$set": {"enabled": payload.enabled, "updated_at": datetime.utcnow()}},
+        {"$set": update_fields},
         upsert=True
     )
     return {"success": True, "message": f"{payload.key} {'enabled' if payload.enabled else 'disabled'}."}
+
+
+class StrategyPermanentToggleRequest(BaseModel):
+    key: str
+    permanent_disabled: bool
+
+
+@router.post("/admin/strategy-permanent-toggle")
+async def set_strategy_permanent_toggle(
+    payload: StrategyPermanentToggleRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """Hard, permanent ON/OFF — bypasses the daily-auto-disable AND the 80%
+    catch-up rule entirely. Use for chronically-weak (legacy) strategies you
+    never want firing again unless you personally re-enable them."""
+    update_fields = {"permanent_disabled": payload.permanent_disabled, "updated_at": datetime.utcnow()}
+    if payload.permanent_disabled:
+        update_fields["enabled"] = False
+    await db.strategy_settings.update_one(
+        {"_id": payload.key},
+        {"$set": update_fields},
+        upsert=True
+    )
+    return {"success": True, "message": f"{payload.key} permanently {'disabled' if payload.permanent_disabled else 'enabled'}."}
 
 
 @router.get("/strategy-signals-log")
