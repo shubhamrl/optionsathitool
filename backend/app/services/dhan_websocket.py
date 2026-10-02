@@ -26,6 +26,12 @@ INDEX_SPOT_TOKENS = {
     "27": "FINNIFTY"
 }
 
+# 🔴 India VIX security_id — PLACEHOLDER, confirm exact ID from Dhan's scrip
+# master (https://images.dhan.co/api-data/api-scrip-master.csv, search "INDIA
+# VIX", segment IDX_I) and replace the string below before this goes live.
+INDIA_VIX_SECURITY_ID = "21"
+live_vix_value: Dict[str, float] = {"vix": 13.5}  # safe fallback until first real tick
+
 # Live Market State Memory
 market_data_store: Dict[str, Dict[str, Dict[str, Any]]] = {
     "NIFTY": {"spot": 0.0, "pcr": 1.0, "trend": "NEUTRAL"},
@@ -96,6 +102,10 @@ def _update_candle_and_orb(index_name: str, ltp: float, ist_now: datetime):
 def get_orb_levels(index_name: str) -> Dict[str, float]:
     orb = index_orb_store.get(index_name, {})
     return {"orb_high": orb.get("orb_high", 0.0), "orb_low": orb.get("orb_low", 0.0)}
+
+
+def get_live_vix() -> float:
+    return live_vix_value.get("vix", 13.5)
 
 
 def get_price_momentum(index_name: str) -> Dict[str, Any]:
@@ -182,7 +192,8 @@ class DhanWebSocketClient:
             {"ExchangeSegment": "IDX_I", "SecurityId": "13"},
             {"ExchangeSegment": "IDX_I", "SecurityId": "25"},
             {"ExchangeSegment": "IDX_I", "SecurityId": "27"},
-            {"ExchangeSegment": "BSE_FNO", "SecurityId": "51"}
+            {"ExchangeSegment": "BSE_FNO", "SecurityId": "51"},
+            {"ExchangeSegment": "IDX_I", "SecurityId": INDIA_VIX_SECURITY_ID}
         ]
         payload = {
             "RequestCode": 15,
@@ -238,6 +249,10 @@ class DhanWebSocketClient:
     async def _handle_tick_update(self, tick: Dict[str, Any], broadcast_callback=None):
         sec_id = tick["security_id"]
         ltp = tick.get("ltp", 0.0)
+
+        if sec_id == INDIA_VIX_SECURITY_ID and ltp > 0:
+            live_vix_value["vix"] = round(ltp, 2)
+            return
 
         if sec_id in INDEX_SPOT_TOKENS and ltp > 0:
             idx_name = INDEX_SPOT_TOKENS[sec_id]

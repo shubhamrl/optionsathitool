@@ -424,6 +424,18 @@ export default function Dashboard() {
     }
   };
 
+  const handleTogglePermanent = async (key, currentPermanent) => {
+    try {
+      await axios.post(
+        `${API_BASE_URL}/signals/admin/strategy-permanent-toggle`,
+        { key, permanent_disabled: !currentPermanent },
+      );
+      fetchStrategyToggles();
+    } catch (e) {
+      alert("Permanent toggle failed, dubara try karein.");
+    }
+  };
+
   const handleExecuteScannerSignal = async (sig) => {
     if (executedScannerSignalIds.includes(sig._id)) return;
     try {
@@ -2413,23 +2425,49 @@ export default function Dashboard() {
                                               s.key.replace("STRAT_", ""),
                                           );
                                           const enabled = t ? t.enabled : true;
+                                          const permanentOff = t
+                                            ? t.permanent_disabled
+                                            : false;
+                                          const key =
+                                            t?.key ||
+                                            s.key.replace("STRAT_", "");
                                           return (
-                                            <button
-                                              onClick={() =>
-                                                handleToggleStrategy(
-                                                  t?.key ||
-                                                    s.key.replace("STRAT_", ""),
-                                                  enabled,
-                                                )
-                                              }
-                                              className={`px-2 py-0.5 rounded text-[9px] font-bold ${
-                                                enabled
-                                                  ? "bg-emerald-500/20 text-emerald-400"
-                                                  : "bg-red-500/20 text-red-400"
-                                              }`}
-                                            >
-                                              {enabled ? "ON" : "OFF"}
-                                            </button>
+                                            <div className="flex items-center gap-1">
+                                              <button
+                                                onClick={() =>
+                                                  handleToggleStrategy(
+                                                    key,
+                                                    enabled,
+                                                  )
+                                                }
+                                                disabled={permanentOff}
+                                                className={`px-2 py-0.5 rounded text-[9px] font-bold disabled:opacity-40 ${
+                                                  enabled
+                                                    ? "bg-emerald-500/20 text-emerald-400"
+                                                    : "bg-red-500/20 text-red-400"
+                                                }`}
+                                              >
+                                                {enabled ? "ON" : "OFF"}
+                                              </button>
+                                              <button
+                                                onClick={() =>
+                                                  handleTogglePermanent(
+                                                    key,
+                                                    permanentOff,
+                                                  )
+                                                }
+                                                className={`px-2 py-0.5 rounded text-[9px] font-bold ${
+                                                  permanentOff
+                                                    ? "bg-red-600/40 text-red-300"
+                                                    : "bg-slate-800 text-slate-500"
+                                                }`}
+                                                title="Permanent OFF — daily auto-reset ise touch nahi karega"
+                                              >
+                                                {permanentOff
+                                                  ? "🔒 PERM-OFF"
+                                                  : "🔓"}
+                                              </button>
+                                            </div>
                                           );
                                         })()}
                                       </td>

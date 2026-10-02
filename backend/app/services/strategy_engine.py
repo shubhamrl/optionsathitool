@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional, Callable
 from bson import ObjectId
 
 from app.core.database import get_database
+from app.services.regime_indicators import is_strategy_allowed_in_regime
 from app.core.config import settings
 from app.core.market_hours import is_market_open
 from app.engine.confluence_math import calculate_option_greeks
@@ -91,9 +92,15 @@ _toggle_cache_time: Optional[datetime] = None
 TOGGLE_CACHE_TTL_SECONDS = 20
 
 
-async def get_strategy_toggles(db) -> Dict[str, bool]:
-    """Cached (20s) map of strategy_key -> enabled. Missing keys default to
-    enabled=True (a strategy is ON unless explicitly turned off in ADMIN)."""
+def _ist_today_str() -> str:
+    ist_offset = timedelta(hours=5, minutes=30)
+    return (datetime.utcnow() + ist_offset).strftime("%Y-%m-%d")
+
+
+async def get_strategy_toggles(db) -> Dict[str, Dict[str, Any]]:
+    """Cached (20s) map of strategy_key -> full settings doc (enabled,
+    permanent_disabled, manual_override_date). Missing keys default to
+    enabled=True (a strategy is ON unless explicitly turned off)."""
     global _toggle_cache, _toggle_cache_time
     now = datetime.utcnow()
     if _toggle_cache_time and (now - _toggle_cache_time).total_seconds() < TOGGLE_CACHE_TTL_SECONDS:
@@ -101,7 +108,11 @@ async def get_strategy_toggles(db) -> Dict[str, bool]:
     toggles = {}
     cursor = db.strategy_settings.find({})
     async for doc in cursor:
-        toggles[doc["_id"]] = doc.get("enabled", True)
+        toggles[doc["_id"]] = {
+            "enabled": doc.get("enabled", True),
+            "permanent_disabled": doc.get("permanent_disabled", False),
+            "manual_override_date": doc.get("manual_override_date"),
+        }
     _toggle_cache = toggles
     _toggle_cache_time = now
     return toggles
@@ -115,7 +126,7 @@ def _ist_today_bounds():
 
 
 AUTO_DISABLE_MIN_TRADES = 5
-AUTO_DISABLE_WIN_RATE_THRESHOLD = 45.0
+AUTO_DISABLE_WIN_RATE_THRESHOLD = 40.0
 
 
 async def get_today_stats(db, breakout_status: str) -> Dict[str, Any]:
@@ -147,15 +158,31 @@ async def get_today_win_rate(db, breakout_status: str) -> Optional[float]:
 async def should_strategy_fire(db, strategy_key: str) -> bool:
     """
     A strategy fires normally if it's ON — UNLESS it auto-qualifies for
-    today's underperformance auto-disable (see below), in which case it gets
-    turned OFF on the spot. If OFF (manually or auto), it still keeps scanning
-    (data-read continues) but only fires when today's live win-rate has
-    proven itself at 80%+ — everyday 'random' signals stay suppressed.
+    today's underperformance auto-disable, in which case it gets turned OFF.
+    If OFF (manually or auto), it still keeps scanning (data-read continues)
+    but only fires when today's live win-rate has proven itself at 80%+.
+
+    Two admin-controlled escape hatches:
+      - permanent_disabled: hard OFF, never fires, ignores even the 80%
+        catch-up rule, until an admin explicitly re-enables it.
+      - manual_override_date == today: admin explicitly turned this ON today
+        AFTER an auto-disable — respects that choice for the REST of today
+        (skips the auto-disable re-check), instead of silently flipping back
+        OFF on the very next scan cycle like it did before this fix.
     """
     toggles = await get_strategy_toggles(db)
-    is_on = toggles.get(strategy_key, True)
+    cfg = toggles.get(strategy_key, {})
+
+    if cfg.get("permanent_disabled"):
+        return False
+
+    is_on = cfg.get("enabled", True)
+    manually_overridden_today = cfg.get("manual_override_date") == _ist_today_str()
 
     if is_on:
+        if manually_overridden_today:
+            return True
+
         # 🔴 Auto-disable check — underperforming strategies get benched
         # mid-day automatically, without needing manual admin action.
         stats = await get_today_stats(db, f"STRAT_{strategy_key}")
@@ -167,13 +194,30 @@ async def should_strategy_fire(db, strategy_key: str) -> bool:
                 upsert=True
             )
             global _toggle_cache_time
-            _toggle_cache_time = None  # force cache refresh on next read
+            _toggle_cache_time = None
             logger.warning(f"🔴 [AUTO-DISABLE] {strategy_key} — {round(stats['win_rate'],1)}% win-rate over {stats['decided']} trades today (threshold {AUTO_DISABLE_WIN_RATE_THRESHOLD}%). Turned OFF for the rest of today.")
             return False
         return True
 
     today_wr = await get_today_win_rate(db, f"STRAT_{strategy_key}")
     return today_wr is not None and today_wr >= 80.0 
+
+
+# 🎯 Regime categories — 'trend' fires only when ADX shows a strong trend,
+# 'mean_reversion' only in a clear range, 'neutral' (default) always fires.
+# This is a starting classification, easy to tweak here without touching
+# each strategy file.
+STRATEGY_REGIME_CATEGORY = {
+    "EMA_TREND_BREAK": "trend",
+    "BOLLINGER_SQUEEZE": "trend",
+    "ORB_BREAKER": "trend",
+    "MA_CROSSOVER": "trend",
+    "MULTI_TIMEFRAME": "trend",
+    "VOLUME_SPIKE": "trend",
+    "VWAP_BOUNCER": "mean_reversion",
+    "OI_BUILDUP": "neutral",
+    "IV_CONTRACTION": "neutral",
+}
 
 
 def register_strategy(key: str, nickname: str, detect_fn: Callable):
@@ -196,19 +240,35 @@ async def _build_context(db, index_name: str) -> Optional[Dict[str, Any]]:
     """Gathers everything strategies commonly need for one index, once per scan
     cycle, so each strategy's detect_fn doesn't redundantly re-fetch the same
     snapshot/candles."""
-    from app.services.dhan_websocket import index_candle_store, market_data_store
+    from app.services.dhan_websocket import index_candle_store, market_data_store, get_live_vix
     from app.services.candle_storage import get_today_candles
+    from app.services.regime_indicators import calculate_adx, get_regime
 
     snapshot = await db.market_snapshots.find_one({"index_name": index_name})
     if not snapshot or not snapshot.get("oc") or snapshot.get("spot", 0) <= 0:
         return None
 
+    # 🎯 Regime computed ONCE per index per scan-cycle (not per-strategy) —
+    # reuses the same 1-min candle history already persisted for other needs.
+    today_candles = await get_today_candles(index_name)
+    adx_value = calculate_adx(today_candles)
+    regime = get_regime(adx_value)
+
+    oc = snapshot["oc"]
+    from app.engine.confluence_math import calculate_pcr_and_sentiment
+    pcr, sentiment = calculate_pcr_and_sentiment(oc)
+
     return {
         "spot": snapshot["spot"],
-        "oc": snapshot["oc"],
+        "oc": oc,
         "live_spot": market_data_store.get(index_name, {}).get("spot", 0.0),
         "recent_candles": index_candle_store.get(index_name, []),  # rolling ~30 min, in-memory
-        "today_candles": None,  # lazy-loaded below only if a strategy needs it
+        "today_candles": today_candles,
+        "adx": adx_value,
+        "regime": regime,
+        "pcr": pcr,
+        "pcr_sentiment": sentiment,
+        "live_vix": get_live_vix(),
         "_db": db,
         "_index_name": index_name,
     }
@@ -311,8 +371,8 @@ async def _execute_strategy_signal(
         "target2": risk_result["target2"],
         "score": 6.0,
         "reasons": [f"STRATEGY: {strategy_nickname}"] + reason_lines,
-        "pcr": 0.0,
-        "vix": 13.5,
+        "pcr": context.get("pcr", 0.0),
+        "vix": context.get("live_vix", 13.5),
         "breakout_status": breakout_status,
         "atm_strike": atm_strike,
         "security_id": security_id,
@@ -390,6 +450,10 @@ async def strategy_engine_loop(broadcast_callback=None):
 
                 for strat in STRATEGIES:
                     try:
+                        category = STRATEGY_REGIME_CATEGORY.get(strat["key"], "neutral")
+                        if not is_strategy_allowed_in_regime(category, context.get("regime", "neutral")):
+                            continue  # wrong setup-type for current market regime — skip, no signal
+
                         result = await strat["detect_fn"](index_name, context)
                         if result:
                             if not await should_strategy_fire(db, strat["key"]):
