@@ -68,6 +68,8 @@ async def log_signal_features(
     selected_type: str,
     momentum_bias: Optional[str] = None,
     orb_triggered: Optional[str] = None,   # "CE", "PE", or None
+    adx: Optional[float] = None,
+    regime: Optional[str] = None,          # "trend" | "range" | "neutral"
 ):
     """Logs a compact feature snapshot at the moment a signal is generated.
     Wrapped in try/except so a logging failure can NEVER break signal generation."""
@@ -93,6 +95,13 @@ async def log_signal_features(
             "hm": now.hour * 100 + now.minute,  # e.g. 931 = 9:31 AM, compact time-of-day
             "out": OUTCOME_PENDING,
         }
+        # 🎯 New regime-context fields — -999 sentinel for "ADX not computed yet"
+        # (real ADX is always 0-100, so this is a safe out-of-range marker),
+        # rgm: 1=trend, -1=range, 0=neutral/unknown. Optional on purpose so old
+        # call-sites (decode/decode-force, if still used) keep working unchanged.
+        doc["adx"] = round(float(adx), 1) if adx is not None else -999
+        doc["rgm"] = {"trend": 1, "range": -1, "neutral": 0}.get(regime, 0)
+
         await db[FEATURE_COLLECTION].insert_one(doc)
     except Exception as e:
         logger.warning(f"⚠️ Feature logging failed (non-critical, trade unaffected): {str(e)}")

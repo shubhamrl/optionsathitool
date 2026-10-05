@@ -13,11 +13,12 @@ L2_REG = 0.01
 LEARNING_RATE = 0.15
 ITERATIONS = 2000
 
-# ⚠️ pcr, orb, score deliberately EXCLUDED — for the vast majority of logged
-# rows (everything from strategy_engine.py's shared execution path) these were
-# hardcoded (pcr=0.0, score=6.0, orb=None) at logging time, so they carry
-# almost no real signal. Only genuinely-variable fields are used.
-NUMERIC_FIELDS = ["delta", "iv", "dir", "mom", "minutes_of_day"]
+# ⚠️ score, orb deliberately EXCLUDED — still hardcoded at logging time (score=6.0,
+# orb=None), carry no real signal. pcr/adx/regime ADDED now that they're genuinely
+# live (previously pcr was also hardcoded 0.0, now fixed at the logging call-site).
+# adx uses a -999 sentinel for rows logged before this field existed / regime
+# wasn't computed yet — rgm defaults to 0 (neutral/unknown) for the same old rows.
+NUMERIC_FIELDS = ["delta", "iv", "dir", "mom", "minutes_of_day", "pcr", "adx", "rgm"]
 
 _cached_model = None
 _cache_loaded_at = None
@@ -70,6 +71,9 @@ async def _fetch_training_rows(db) -> List[Dict[str, Any]]:
             "dir": float(d.get("dir", 1)),
             "mom": float(d.get("mom", 0)),
             "minutes_of_day": _hm_to_minutes(int(d.get("hm", 930))),
+            "pcr": float(d.get("pcr", 0.0)),
+            "adx": float(d.get("adx", -999)),
+            "rgm": float(d.get("rgm", 0)),
             "idx": d.get("idx", "NI"),
             "strategy": strategy,
             "label": 1 if d.get("out") == 1 else 0,
@@ -196,7 +200,8 @@ async def _get_model(db):
 
 async def predict_confidence(
     db, index_name: str, strategy_key: str, delta: float, iv: float,
-    selected_type: str, mom_bias: Optional[str], hm: int
+    selected_type: str, mom_bias: Optional[str], hm: int,
+    pcr: float = 0.0, adx: Optional[float] = None, regime: Optional[str] = None
 ) -> Optional[float]:
     """
     Returns predicted probability (0-1) of TARGET_HIT for a new signal, or
@@ -214,6 +219,9 @@ async def predict_confidence(
         row = {
             "delta": delta, "iv": iv, "dir": dir_code, "mom": mom_code,
             "minutes_of_day": _hm_to_minutes(hm),
+            "pcr": pcr,
+            "adx": adx if adx is not None else -999,
+            "rgm": {"trend": 1, "range": -1, "neutral": 0}.get(regime, 0),
             "idx": index_name[:2].upper(),
             "strategy": f"STRAT_{strategy_key}",
         }
