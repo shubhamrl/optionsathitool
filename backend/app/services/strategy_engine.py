@@ -400,8 +400,9 @@ async def _execute_strategy_signal(
 
     await log_signal_features(
         db=db, signal_id=signal_id, index_name=index_name, mode=f"strategy_{strategy_key.lower()}",
-        pcr=0.0, delta=greeks["delta"], iv=iv, score=6.0,
-        selected_type=selected_type, momentum_bias=live_momentum.get("bias"), orb_triggered=None
+        pcr=context.get("pcr", 0.0), delta=greeks["delta"], iv=iv, score=6.0,
+        selected_type=selected_type, momentum_bias=live_momentum.get("bias"), orb_triggered=None,
+        adx=context.get("adx"), regime=context.get("regime")
     )
 
     # 🧠 SHADOW MODE — predicts confidence for tracking/comparison only, never
@@ -411,7 +412,8 @@ async def _execute_strategy_signal(
     _now_hm = int(_dt.utcnow().strftime("%H%M"))
     predicted_conf = await predict_confidence(
         db, index_name=index_name, strategy_key=strategy_key, delta=greeks["delta"],
-        iv=iv, selected_type=selected_type, mom_bias=live_momentum.get("bias"), hm=_now_hm
+        iv=iv, selected_type=selected_type, mom_bias=live_momentum.get("bias"), hm=_now_hm,
+        pcr=context.get("pcr", 0.0), adx=context.get("adx"), regime=context.get("regime")
     )
     if predicted_conf is not None:
         await db.signals.update_one({"_id": ObjectId(signal_id)}, {"$set": {"predicted_confidence": predicted_conf}})
