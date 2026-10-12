@@ -412,6 +412,10 @@ export default function Dashboard() {
     } catch (e) {}
   };
 
+  useEffect(() => {
+    if (showStrategyLeaderboard) fetchStrategyToggles();
+  }, [showStrategyLeaderboard]);
+
   const handleToggleStrategy = async (key, currentEnabled) => {
     try {
       await axios.post(`${API_BASE_URL}/signals/admin/strategy-toggle`, {
@@ -2185,24 +2189,7 @@ export default function Dashboard() {
                                               >
                                                 {enabled ? "ON" : "OFF"}
                                               </button>
-                                              <button
-                                                onClick={() =>
-                                                  handleTogglePermanent(
-                                                    key,
-                                                    permanentOff,
-                                                  )
-                                                }
-                                                className={`px-2 py-0.5 rounded text-[9px] font-bold ${
-                                                  permanentOff
-                                                    ? "bg-red-600/40 text-red-300"
-                                                    : "bg-slate-800 text-slate-500"
-                                                }`}
-                                                title="Permanent OFF — daily auto-reset ise touch nahi karega"
-                                              >
-                                                {permanentOff
-                                                  ? "🔒 PERM-OFF"
-                                                  : "🔓"}
-                                              </button>
+                                              
                                             </div>
                                           );
                                         })()}
@@ -2340,6 +2327,7 @@ export default function Dashboard() {
                         <th className="p-2">Target Hit</th>
                         <th className="p-2">SL Hit</th>
                         <th className="p-2">Decided</th>
+                        <th className="p-2">Status</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2364,12 +2352,62 @@ export default function Dashboard() {
                             </td>
                             <td className="p-2 text-red-400">{s.sl_hit}</td>
                             <td className="p-2 text-slate-400">{s.decided}</td>
+                            <td className="p-2">
+                              {(() => {
+                                const baseKey = s.key.replace("STRAT_", "");
+                                const t = strategyToggles.find(
+                                  (x) => x.key === baseKey,
+                                );
+                                if (!t) {
+                                  return (
+                                    <span className="text-slate-600 text-[9px]">
+                                      —
+                                    </span>
+                                  );
+                                }
+                                const enabled = t.enabled;
+                                const permanentOff = t.permanent_disabled;
+                                return (
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      onClick={() =>
+                                        handleToggleStrategy(baseKey, enabled)
+                                      }
+                                      disabled={permanentOff}
+                                      className={`px-2 py-0.5 rounded text-[9px] font-bold disabled:opacity-40 ${
+                                        enabled
+                                          ? "bg-emerald-500/20 text-emerald-400"
+                                          : "bg-red-500/20 text-red-400"
+                                      }`}
+                                    >
+                                      {enabled ? "ON" : "OFF"}
+                                    </button>
+                                    <button
+                                      onClick={() =>
+                                        handleTogglePermanent(
+                                          baseKey,
+                                          permanentOff,
+                                        )
+                                      }
+                                      className={`px-2 py-0.5 rounded text-[9px] font-bold ${
+                                        permanentOff
+                                          ? "bg-red-600/40 text-red-300"
+                                          : "bg-slate-800 text-slate-500"
+                                      }`}
+                                      title="Permanent OFF — daily auto-reset ise touch nahi karega"
+                                    >
+                                      {permanentOff ? "🔒 PERM-OFF" : "🔓"}
+                                    </button>
+                                  </div>
+                                );
+                              })()}
+                            </td>
                           </tr>
                         ))
                       ) : (
                         <tr>
                           <td
-                            colSpan="5"
+                            colSpan="6"
                             className="p-6 text-center text-slate-500"
                           >
                             Koi strategy data abhi tak nahi hai.
