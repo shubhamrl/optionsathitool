@@ -384,6 +384,8 @@ async def _execute_strategy_signal(
     signal_id = str(res.inserted_id)
     signal_doc["_id"] = signal_id
 
+    from app.services.dhan_websocket import register_token_index_mapping
+    register_token_index_mapping({security_id: index_name})
     track_active_position_trade(
         security_id=security_id, signal_id=signal_id,
         target=risk_result["target1"], sl=risk_result["stop_loss"]
