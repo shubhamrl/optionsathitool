@@ -27,7 +27,7 @@ const isLocal =
     window.location.hostname === "127.0.0.1");
 const BACKEND_HOST = isLocal
   ? "http://localhost:8000"
-  : "https://optionsathitool-od8y.onrender.com";
+  : "https://optionsathitool-1is4.onrender.com";
 const API_BASE_URL = `${BACKEND_HOST}/api/v1`;
 const WS_BASE_URL = isLocal
   ? "ws://localhost:8000"
