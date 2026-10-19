@@ -24,6 +24,7 @@ from bson import ObjectId
 
 from app.core.config import settings
 from app.core.market_hours import is_market_open
+from app.models.paper_trading import LOT_SIZES
 
 logger = logging.getLogger(__name__)
 
@@ -96,11 +97,26 @@ def _contract_label(index_name: str, strike: str, expiry: Optional[str]) -> str:
     return f"{index_name} {exp}{strike}"
 
 
+def _inr(v: float) -> str:
+    return f"₹{abs(v):,.0f}"
+
+
+def _signed_inr(v: float) -> str:
+    return f"+₹{v:,.0f}" if v >= 0 else f"-₹{abs(v):,.0f}"
+
+
+def _bar(kind: str) -> str:
+    return {"green": "🟩", "red": "🟥", "amber": "🟨"}.get(kind, "⬜") * 10
+
+
 def _signal_text(job: Dict[str, Any], expiry: Optional[str]) -> str:
     is_ce = job["selected_type"] == "CE"
     icon = "🟢" if is_ce else "🔴"
-    view = "Bullish view" if is_ce else "Bearish view"
-    entry = job["entry"]
+    view = "Bullish view 📈" if is_ce else "Bearish view 📉"
+    bar = _bar("green" if is_ce else "red")
+    qty = LOT_SIZES.get(job["index_name"], 0)
+    entry, sl, t1, t2 = job["entry"], job["sl"], job["t1"], job["t2"]
+
     if ENTRY_ZONE_PCT > 0:
         entry_txt = f"₹{_p(entry)} - ₹{_p(round(entry * (1 + ENTRY_ZONE_PCT), 2))}"
     else:
@@ -113,22 +129,33 @@ def _signal_text(job: Dict[str, Any], expiry: Optional[str]) -> str:
     spot_txt = f" (Spot: {job['spot']:,.0f})" if job.get("spot", 0) > 0 else ""
 
     lines = [
-        f"⚡ <b>OPTIONSAATHI RADAR | {_esc(job['index_name'])}</b>",
-        "━━━━━━━━━━━━━━━━━━━",
-        f"🎯 Contract: {_esc(_contract_label(job['index_name'], job['strike'], expiry))}",
-        f"{icon} Signal: BUY {job['selected_type']} ({view})",
+        f"⚡🔥 <b>OPTIONSAATHI RADAR | {_esc(job['index_name'])}</b> 🔥⚡",
+        bar,
+        f"🎯 <b>{_esc(_contract_label(job['index_name'], job['strike'], expiry))}</b>",
+        f"{icon} <b>BUY {job['selected_type']}</b> — {view}",
         "",
-        f"💰 Entry: {entry_txt}",
-        f"🛑 Stop-Loss: ₹{_p(job['sl'])}",
-        f"🎯 Target 1: ₹{_p(job['t1'])}",
+        f"💰 Entry: <b>{entry_txt}</b>",
+        f"🛑 Stop-Loss: ₹{_p(sl)}",
+        f"🎯 Target 1: ₹{_p(t1)}",
     ]
-    if job["t2"] > job["t1"]:
-        lines.append(f"🎯 Target 2: ₹{_p(job['t2'])}")
+    if t2 > t1:
+        lines.append(f"🚀 Target 2: ₹{_p(t2)}")
+
+    if qty and entry > sl > 0 and t1 > entry:
+        risk_lot = (entry - sl) * qty
+        reward_lot = (t1 - entry) * qty
+        rr = (t1 - entry) / (entry - sl)
+        lines += [
+            "",
+            f"💼 1 Lot ({qty} qty) = {_inr(entry * qty)}",
+            f"📉 Risk/lot ≈ {_inr(risk_lot)}  |  📈 T1 reward/lot ≈ {_inr(reward_lot)}  (R:R 1:{rr:.1f})",
+        ]
+
     lines += [
         "",
         f"🔍 Trigger: {_esc(trigger)}{spot_txt}",
         f"⏰ Time: {_fmt_time()}",
-        "━━━━━━━━━━━━━━━━━━━",
+        bar,
         _esc(FOOTER),
     ]
     return "\n".join(lines)
@@ -138,37 +165,46 @@ def _outcome_text(post: Dict[str, Any], status: str, exit_price: float, high_mad
     entry = float(post["entry"])
     pts = exit_price - entry
     pct = (pts / entry * 100) if entry else 0.0
+    qty = LOT_SIZES.get(post["index_name"], 0)
+    lot_pl = pts * qty
     res = f"{pts:+.1f} Pts ({pct:+.1f}%)"
 
     if status == "TARGET_HIT":
-        head = "🎯 <b>TARGET 1 HIT! | OPTIONSAATHI</b>"
-        result_line = f"💵 Profit: {res}"
-        foot = "✅ Target 1 achieved."
+        head = "🚀🚀 <b>TARGET 1 HIT!</b> 🚀🚀 | OPTIONSAATHI"
+        bar = _bar("green")
+        result_line = f"💵 Profit: <b>{res}</b>"
+        money_label = "🤑 Profit per lot"
+        foot = "✅ Target 1 achieved. 🔥"
         time_label = "Hit Time"
     elif status == "SL_HIT":
-        head = "🛑 <b>STOP-LOSS HIT | OPTIONSAATHI</b>"
-        result_line = f"💸 Loss: {res}"
+        head = "🛑 <b>STOP-LOSS HIT</b> | OPTIONSAATHI"
+        bar = _bar("red")
+        result_line = f"💸 Loss: <b>{res}</b>"
+        money_label = "📉 Loss per lot"
         foot = "❌ Stop-loss triggered. Position closed."
         time_label = "Hit Time"
     else:
-        head = "⏰ <b>EOD CLOSE | OPTIONSAATHI</b>"
-        result_line = f"📊 P/L at close: {res}"
+        head = "⏰ <b>EOD CLOSE</b> | OPTIONSAATHI"
+        bar = _bar("amber")
+        result_line = f"📊 P/L at close: <b>{res}</b>"
+        money_label = "💼 P/L per lot"
         foot = "Closed at market close (CMP)."
         time_label = "Close Time"
 
     lines = [
         head,
-        "━━━━━━━━━━━━━━━━━━━",
+        bar,
         f"📌 Contract: {_esc(post['label'])}",
-        f"💰 Entry Price: ₹{entry:,.2f}",
-        f"🏁 Exit Price: ₹{exit_price:,.2f}",
+        f"💰 Entry ₹{entry:,.2f}  ➜  🏁 Exit ₹{exit_price:,.2f}",
     ]
     if status == "TARGET_HIT" and high_made:
-        lines.append(f"🚀 High Made: ₹{high_made:,.2f}")
+        lines.append(f"🔥 High Made: ₹{high_made:,.2f}")
+    lines.append(result_line)
+    if qty:
+        lines.append(f"{money_label} ({qty} qty): <b>{_signed_inr(lot_pl)}</b>  <i>(before charges)</i>")
     lines += [
-        result_line,
         f"⏰ {time_label}: {_fmt_time()}",
-        "━━━━━━━━━━━━━━━━━━━",
+        bar,
         foot,
     ]
     return "\n".join(lines)
@@ -178,17 +214,22 @@ def _t2_text(post: Dict[str, Any], ltp: float) -> str:
     entry = float(post["entry"])
     pts = ltp - entry
     pct = (pts / entry * 100) if entry else 0.0
-    return "\n".join([
-        "🎯🎯 <b>TARGET 2 HIT! | OPTIONSAATHI</b>",
-        "━━━━━━━━━━━━━━━━━━━",
+    qty = LOT_SIZES.get(post["index_name"], 0)
+    lines = [
+        "🎯🚀 <b>TARGET 2 HIT!</b> 🚀🎯 | OPTIONSAATHI",
+        _bar("green"),
         f"📌 Contract: {_esc(post['label'])}",
-        f"💰 Entry Price: ₹{entry:,.2f}",
-        f"🚀 Reached: ₹{ltp:,.2f}",
-        f"💵 Move vs entry: {pts:+.1f} Pts ({pct:+.1f}%)",
+        f"💰 Entry ₹{entry:,.2f}  ➜  🚀 Reached ₹{ltp:,.2f}",
+        f"💵 Move vs entry: <b>{pts:+.1f} Pts ({pct:+.1f}%)</b>",
+    ]
+    if qty:
+        lines.append(f"🤑 Per lot ({qty} qty): <b>{_signed_inr(pts * qty)}</b>  <i>(before charges)</i>")
+    lines += [
         f"⏰ Time: {_fmt_time()}",
-        "━━━━━━━━━━━━━━━━━━━",
-        "Follow-up: Target 2 reached after Target 1.",
-    ])
+        _bar("green"),
+        "Follow-up: Target 2 reached after Target 1. 🔥",
+    ]
+    return "\n".join(lines)
 
 
 # ---------------- producer side (called from the strategy engine) ----------------
