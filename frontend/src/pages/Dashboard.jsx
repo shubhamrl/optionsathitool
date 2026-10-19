@@ -31,7 +31,7 @@ const BACKEND_HOST = isLocal
 const API_BASE_URL = `${BACKEND_HOST}/api/v1`;
 const WS_BASE_URL = isLocal
   ? "ws://localhost:8000"
-  : "wss://optionsathitool-od8y.onrender.com";
+  : "wss://optionsathitool-1is4.onrender.com";
 
 // REPLACE WITH:
 export default function Dashboard() {
