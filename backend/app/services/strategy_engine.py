@@ -13,12 +13,15 @@ from app.engine.risk_manager import risk_manager
 from app.services.feature_logger import log_signal_features
 from app.services.auto_trader import auto_execute_for_all_users
 from app.services.algo_verification import queue_for_verification
+from app.services.signal_gates import evaluate_gate, live_option_ltp, prewarm_atm_ticks, LIVE_PRICE_MAX_DEVIATION
+
+_SNAPSHOT_CACHE = {}   # latest option-chain snapshot per index, kept in memory (saves Atlas reads)
 from app.services.telegram_dispatcher import notify_new_signal
 from app.services.token_registry import fetch_expiry_list, fetch_full_option_chain_data
 
 logger = logging.getLogger(__name__)
 
-SCAN_INTERVAL_SECONDS = 25
+SCAN_INTERVAL_SECONDS = 10
 _expiry_cache: Dict[str, Dict[str, Any]] = {}
 
 
@@ -44,7 +47,7 @@ async def _refresh_market_snapshot(db, index_name: str):
     FORCED SCALP buttons, which also read market_snapshots) of data. Restored
     here so the Strategy Engine is fully self-sufficient again.
     """
-    existing = await db.market_snapshots.find_one({"index_name": index_name})
+    existing = _SNAPSHOT_CACHE.get(index_name) or await db.market_snapshots.find_one({"index_name": index_name})
     if existing:
         age_seconds = (datetime.utcnow() - existing.get("updated_at", datetime.min)).total_seconds()
         if age_seconds < 18:
@@ -66,6 +69,7 @@ async def _refresh_market_snapshot(db, index_name: str):
     if spot <= 0 or not oc:
         return
 
+    _SNAPSHOT_CACHE[index_name] = {"index_name": index_name, "expiry": expiry, "spot": spot, "oc": oc, "updated_at": datetime.utcnow()}
     await db.market_snapshots.update_one(
         {"index_name": index_name},
         {"$set": {"index_name": index_name, "expiry": expiry, "spot": spot, "oc": oc, "updated_at": datetime.utcnow()}},
@@ -245,7 +249,10 @@ async def _build_context(db, index_name: str) -> Optional[Dict[str, Any]]:
     from app.services.candle_storage import get_today_candles
     from app.services.regime_indicators import calculate_adx, get_regime
 
-    snapshot = await db.market_snapshots.find_one({"index_name": index_name})
+    snapshot = _SNAPSHOT_CACHE.get(index_name) or await db.market_snapshots.find_one({"index_name": index_name})
+    # never act on stale data (e.g. Dhan API down / token expired)
+    if snapshot and (datetime.utcnow() - snapshot.get("updated_at", datetime.min)).total_seconds() > 120:
+        snapshot = None
     if not snapshot or not snapshot.get("oc") or snapshot.get("spot", 0) <= 0:
         return None
 
@@ -314,10 +321,23 @@ async def _execute_strategy_signal(
     selected_node = atm_node.get("ce") if selected_type == "CE" else atm_node.get("pe")
     entry_price = float(selected_node.get("last_price") or 0.0) if selected_node else 0.0
     security_id = str(selected_node.get("security_id") or "") if selected_node else ""
+
+    # ⚡ Real-time entry: prefer the live WebSocket tick over the REST snapshot price
+    # (which can be 10-40s old). Ignored if it deviates >15% from the snapshot (bad-tick guard).
+    _live_px = live_option_ltp(index_name, security_id) if security_id else None
+    if _live_px and entry_price > 0 and abs(_live_px - entry_price) / entry_price <= LIVE_PRICE_MAX_DEVIATION:
+        entry_price = _live_px
     if entry_price <= 0 or not security_id:
         return
 
     breakout_status = f"STRAT_{strategy_key}"
+
+    # 🚦 Gates: confluence + midday sleeping window + solo fast-lane (all in-memory)
+    gate = evaluate_gate(index_name, strategy_key, strategy_nickname, selected_type, context.get("regime"))
+    if not gate["allow"]:
+        return
+    if gate["count"] > 1:
+        reason_lines = [f"CONFLUENCE x{gate['count']}: {', '.join(gate['names'])}"] + list(reason_lines)
 
     # 🎯 QUALITY GATE 1 — Cross-strategy dedup: if ANY strategy already signalled
     # this exact index+strike+direction recently, don't let a DIFFERENT strategy
@@ -378,6 +398,9 @@ async def _execute_strategy_signal(
         "atm_strike": atm_strike,
         "security_id": security_id,
         "status": "ACTIVE",
+        "confluence_count": gate["count"],
+        "confluence_with": gate["with"],
+        "in_sleep_window": gate["in_window"],
         "created_at": datetime.utcnow()
     }
 
@@ -452,6 +475,8 @@ async def strategy_engine_loop(broadcast_callback=None):
             for index_name in STRATEGY_INDICES:
                 await _refresh_market_snapshot(db, index_name)
                 context = await _build_context(db, index_name)
+                if context:
+                    prewarm_atm_ticks(index_name, context["spot"], context["oc"])
                 if not context:
                     continue
 
