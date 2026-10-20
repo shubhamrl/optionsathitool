@@ -225,6 +225,57 @@ export default function Dashboard() {
   const [showIndexPerformance, setShowIndexPerformance] = useState(false);
   const [mlReadiness, setMlReadiness] = useState(null);
   const [showMlReadiness, setShowMlReadiness] = useState(false);
+
+  const [gateReport, setGateReport] = useState(null);
+  const [showGateReport, setShowGateReport] = useState(false);
+
+  const fetchGateReport = async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/signals/admin/gate-report`);
+      if (res.data && res.data.success) setGateReport(res.data);
+    } catch (e) {}
+  };
+
+  const gateTableHead = (
+    <thead className="bg-slate-950/60 text-slate-500 border-b border-slate-800 uppercase text-[9px]">
+      <tr>
+        <th className="p-2">Group</th>
+        <th className="p-2">Signals</th>
+        <th className="p-2">Target</th>
+        <th className="p-2">SL</th>
+        <th className="p-2">EOD</th>
+        <th className="p-2">Win %</th>
+        <th className="p-2">Net R/trade</th>
+        <th className="p-2">Net R total</th>
+      </tr>
+    </thead>
+  );
+
+  const renderGateRows = (rows) =>
+    (rows || []).map((r) => (
+      <tr key={r.label} className="border-b border-slate-800/50">
+        <td className="p-2 font-semibold text-slate-200">{r.label}</td>
+        <td className="p-2 text-slate-400">{r.signals}</td>
+        <td className="p-2 text-emerald-400">{r.target_hit}</td>
+        <td className="p-2 text-red-400">{r.sl_hit}</td>
+        <td className="p-2 text-amber-400">{r.expired}</td>
+        <td
+          className={`p-2 font-extrabold ${r.win_rate_percentage >= 50 ? "text-emerald-400" : "text-red-400"}`}
+        >
+          {r.decided > 0 ? `${r.win_rate_percentage}%` : "—"}
+        </td>
+        <td
+          className={`p-2 font-bold ${r.net_avg_r >= 0 ? "text-emerald-400" : "text-red-400"}`}
+        >
+          {r.decided > 0 ? `${r.net_avg_r >= 0 ? "+" : ""}${r.net_avg_r}R` : "—"}
+        </td>
+        <td
+          className={`p-2 ${r.net_total_r >= 0 ? "text-emerald-400" : "text-red-400"}`}
+        >
+          {r.decided > 0 ? `${r.net_total_r >= 0 ? "+" : ""}${r.net_total_r}R` : "—"}
+        </td>
+      </tr>
+    ));
   const [mlTraining, setMlTraining] = useState(false);
   const [mlShadowPerformance, setMlShadowPerformance] = useState(null);
 
@@ -1858,7 +1909,22 @@ export default function Dashboard() {
         {activeTab === "ADMIN" && (
           <div className="space-y-6">
             {/* Toggle buttons for the collapsible sections */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+              <button
+                onClick={() => {
+                  const next = !showGateReport;
+                  setShowGateReport(next);
+                  if (next) fetchGateReport();
+                }}
+                className="bg-yellow-950/30 border border-yellow-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-yellow-950/50 transition-all"
+              >
+                <span className="text-sm font-bold text-yellow-300 flex items-center gap-2">
+                  🚦 Gate Report
+                </span>
+                <span className="text-xs text-slate-500">
+                  {showGateReport ? "▾" : "▸"}
+                </span>
+              </button>
               <button
                 onClick={() => setShowAccuracyDetails((v) => !v)}
                 className="bg-indigo-950/30 border border-indigo-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-indigo-950/50 transition-all"
@@ -1936,6 +2002,71 @@ export default function Dashboard() {
                 </span>
               </button>
             </div>
+
+            {showGateReport && (
+              <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-4 md:p-6 space-y-5">
+                <div>
+                  <h3 className="text-sm md:text-base font-bold text-slate-200">
+                    🚦 Gate Report: Confluence aur Sleeping Window
+                  </h3>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Sirf gate lagne ke baad ke signals (last {gateReport?.days || 14} din).
+                    Net R = gross R − {gateReport?.cost_r_assumed ?? 0.15}R assumed charges
+                    per trade. Jis row me 30 se kam decided hon, uske number par bharosa mat karo.
+                  </p>
+                </div>
+
+                {gateReport ? (
+                  gateReport.total_signals > 0 ? (
+                    <>
+                      <div>
+                        <p className="text-xs font-bold text-yellow-300 mb-2">
+                          Kitni strategies agree hui
+                        </p>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs text-slate-300 min-w-[560px]">
+                            {gateTableHead}
+                            <tbody>{renderGateRows(gateReport.by_confluence)}</tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      <div>
+                        <p className="text-xs font-bold text-yellow-300 mb-2">
+                          Sleeping window (11:00-14:00) ke andar vs bahar
+                        </p>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs text-slate-300 min-w-[560px]">
+                            {gateTableHead}
+                            <tbody>{renderGateRows(gateReport.by_window)}</tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      <div>
+                        <p className="text-xs font-bold text-yellow-300 mb-2">
+                          Din ke hisaab se (signal count bhi dekho)
+                        </p>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs text-slate-300 min-w-[560px]">
+                            {gateTableHead}
+                            <tbody>{renderGateRows(gateReport.by_day)}</tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-slate-500 text-center py-4">
+                      Abhi gate wala data nahi hai.
+                    </p>
+                  )
+                ) : (
+                  <p className="text-xs text-slate-500 text-center py-4">
+                    Loading...
+                  </p>
+                )}
+              </div>
+            )}
 
             {showMlReadiness && (
               <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-4 md:p-6 space-y-4">
