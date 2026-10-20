@@ -38,10 +38,12 @@ SLEEP_MIN_AGREE = 3
 SLEEP_MIN_AGREE_IF_TREND = 2       # regime == "trend" (ADX > 22)
 
 SUMMARY_EVERY_MINUTES = 10
+
+NO_NEW_SIGNALS_AFTER = (14, 55)    # IST: no new scanner signals from here (EOD square-off is 3:15 PM)
 LIVE_PRICE_MAX_DEVIATION = 0.15    # ignore a live tick that differs >15% from snapshot price
 
 _candidates: Dict[str, Dict[str, Dict[str, Any]]] = {}   # index -> strategy_key -> vote
-_stats = {"allowed": 0, "solo": 0, "no_confluence": 0, "window": 0, "opposite": 0}
+_stats = {"allowed": 0, "solo": 0, "no_confluence": 0, "window": 0, "opposite": 0, "late": 0}
 _last_summary = datetime.utcnow()
 
 
@@ -56,7 +58,7 @@ def _maybe_log_summary(now: datetime):
     logger.info(
         f"🚦 [GATE SUMMARY] last {SUMMARY_EVERY_MINUTES} min → passed={_stats['allowed']} "
         f"(solo={_stats['solo']}), waiting-for-confirmation={_stats['no_confluence']}, "
-        f"held-by-sleep-window={_stats['window']}, blocked-opposite={_stats['opposite']}"
+        f"held-by-sleep-window={_stats['window']}, blocked-opposite={_stats['opposite']}, after-cutoff={_stats['late']}"
     )
     for k in _stats:
         _stats[k] = 0
@@ -68,6 +70,11 @@ def evaluate_gate(index_name: str, strategy_key: str, nickname: str, bias: str, 
     ist = now + IST_OFFSET
     window = SLEEP_WINDOW_ENABLED and in_sleep_window(ist)
     _maybe_log_summary(now)
+
+    # ⏰ Too close to the 3:15 PM EOD square-off: a new signal can't resolve in time.
+    if (ist.hour, ist.minute) >= NO_NEW_SIGNALS_AFTER:
+        _stats["late"] += 1
+        return {"allow": False, "count": 0, "with": [], "names": [nickname], "in_window": False, "need": 0}
 
     if not CONFLUENCE_ENABLED and not window:
         _stats["allowed"] += 1

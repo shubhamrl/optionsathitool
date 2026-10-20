@@ -1025,6 +1025,110 @@ async def get_ml_shadow_performance(
     return {"success": True, "buckets": results, "model_info": model_info}
 
 
+GATE_REPORT_COST_R = 0.15   # assumed round-trip charges per trade, in R (~₹80 on ~₹550 risk)
+
+
+def _signal_r(doc: Dict[str, Any]) -> Optional[float]:
+    """Realised R-multiple (gross, before charges) of a resolved signal; None while still open."""
+    entry = float(doc.get("entry_price") or 0.0)
+    sl = float(doc.get("stop_loss") or 0.0)
+    risk = entry - sl
+    if risk <= 0:
+        return None
+    status = doc.get("status")
+    exit_px = doc.get("exit_ltp")
+    if status == "TARGET_HIT":
+        if exit_px:
+            return (float(exit_px) - entry) / risk
+        t1 = float(doc.get("shz_upper") or 0.0)
+        return (t1 - entry) / risk if t1 > entry else None
+    if status == "SL_HIT":
+        return (float(exit_px) - entry) / risk if exit_px else -1.0
+    if status == "EXPIRED" and exit_px:
+        return (float(exit_px) - entry) / risk
+    return None
+
+
+def _gate_bucket(label: str) -> Dict[str, Any]:
+    return {"label": label, "signals": 0, "target_hit": 0, "sl_hit": 0, "expired": 0, "r_sum": 0.0, "r_n": 0}
+
+
+def _gate_add(bucket: Dict[str, Any], doc: Dict[str, Any]):
+    bucket["signals"] += 1
+    status = doc.get("status")
+    if status == "TARGET_HIT":
+        bucket["target_hit"] += 1
+    elif status == "SL_HIT":
+        bucket["sl_hit"] += 1
+    elif status == "EXPIRED":
+        bucket["expired"] += 1
+    r = _signal_r(doc)
+    if r is not None:
+        bucket["r_sum"] += r
+        bucket["r_n"] += 1
+
+
+def _gate_finalize(b: Dict[str, Any]) -> Dict[str, Any]:
+    decided = b["target_hit"] + b["sl_hit"]
+    wr = round(b["target_hit"] / decided * 100, 1) if decided else 0.0
+    avg_r = (b["r_sum"] / b["r_n"]) if b["r_n"] else 0.0
+    return {
+        "label": b["label"], "signals": b["signals"], "target_hit": b["target_hit"],
+        "sl_hit": b["sl_hit"], "expired": b["expired"], "decided": decided,
+        "win_rate_percentage": wr,
+        "avg_r": round(avg_r, 2),
+        "net_avg_r": round(avg_r - GATE_REPORT_COST_R, 2) if b["r_n"] else 0.0,
+        "net_total_r": round(b["r_sum"] - GATE_REPORT_COST_R * b["r_n"], 1),
+    }
+
+
+@router.get("/admin/gate-report")
+async def get_gate_report(
+    days: int = 14,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """Performance of scanner signals created AFTER the confluence/sleep-window gate went live
+    (they carry confluence_count / in_sleep_window), split by how many strategies agreed,
+    by sleeping-window vs outside, and by day."""
+    days = max(1, min(days, 60))
+    ist_offset = timedelta(hours=5, minutes=30)
+    since = datetime.utcnow() - timedelta(days=days)
+
+    cursor = db.signals.find(
+        {"user_id": "SYSTEM_STRATEGY_ENGINE", "confluence_count": {"$exists": True}, "created_at": {"$gte": since}},
+        {"status": 1, "entry_price": 1, "stop_loss": 1, "shz_upper": 1, "exit_ltp": 1,
+         "confluence_count": 1, "in_sleep_window": 1, "created_at": 1}
+    )
+    docs = await cursor.to_list(length=5000)
+
+    conf = {1: _gate_bucket("1 (solo lane / gate off)"), 2: _gate_bucket("2 agree"), 3: _gate_bucket("3+ agree")}
+    win = {True: _gate_bucket("Sleeping window (11:00-14:00)"), False: _gate_bucket("Outside window")}
+    days_map: Dict[str, Dict[str, Any]] = {}
+
+    for d in docs:
+        c = int(d.get("confluence_count") or 1)
+        _gate_add(conf[1 if c <= 1 else (2 if c == 2 else 3)], d)
+        _gate_add(win[bool(d.get("in_sleep_window"))], d)
+        created = d.get("created_at")
+        if created:
+            local = created + ist_offset
+            key = local.strftime("%Y-%m-%d")
+            if key not in days_map:
+                days_map[key] = _gate_bucket(local.strftime("%d %b %Y"))
+            _gate_add(days_map[key], d)
+
+    return {
+        "success": True,
+        "days": days,
+        "total_signals": len(docs),
+        "cost_r_assumed": GATE_REPORT_COST_R,
+        "by_confluence": [_gate_finalize(b) for b in conf.values()],
+        "by_window": [_gate_finalize(b) for b in win.values()],
+        "by_day": [_gate_finalize(days_map[k]) for k in sorted(days_map.keys(), reverse=True)],
+    }
+
+
 @router.post("/admin/reset-accuracy-tracking")
 async def reset_accuracy_tracking(
     current_user: Dict[str, Any] = Depends(get_current_user),
