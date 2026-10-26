@@ -1,5 +1,6 @@
 import logging
-from typing import Dict, Any, List, Optional
+from datetime import datetime
+from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,47 @@ def calculate_adx(candles: List[Dict[str, Any]], period: int = ADX_PERIOD) -> Op
     if len(dx_values) < period:
         return None
     return round(sum(dx_values[-period:]) / period, 2)
+
+
+def _to_5min(candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Group consecutive 1-minute candles (keys m,o,h,l,c) into 5-minute bars. Groups consecutive
+    runs, so it also works across a day boundary."""
+    bars: List[Dict[str, Any]] = []
+    cur_key = None
+    for c in candles:
+        try:
+            hh, mm = str(c["m"]).split(":")
+            key = f"{hh}:{(int(mm) // 5) * 5:02d}"
+        except Exception:
+            continue
+        if key != cur_key:
+            bars.append({"o": c["o"], "h": c["h"], "l": c["l"], "c": c["c"]})
+            cur_key = key
+        else:
+            b = bars[-1]
+            b["h"] = max(b["h"], c["h"])
+            b["l"] = min(b["l"], c["l"])
+            b["c"] = c["c"]
+    return bars
+
+
+_adx5_cache: Dict[str, Tuple[datetime, Optional[float]]] = {}
+
+
+async def get_adx_5m(index_name: str) -> Optional[float]:
+    """ADX(14) on 5-minute bars from yesterday's + today's regular-session candles (yesterday is
+    the warm-up, so it is usable from the open). Cached 45s. 1-minute ADX sat at 60-80, so it
+    never separated trending from choppy markets."""
+    now = datetime.utcnow()
+    cached = _adx5_cache.get(index_name)
+    if cached and (now - cached[0]).total_seconds() < 45:
+        return cached[1]
+    from app.services.candle_storage import get_recent_days_candles
+    days = await get_recent_days_candles(index_name, days=2)
+    flat = [c for day in days for c in day]
+    value = calculate_adx(_to_5min(flat))
+    _adx5_cache[index_name] = (now, value)
+    return value
 
 
 def get_regime(adx_value: Optional[float]) -> str:

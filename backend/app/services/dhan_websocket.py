@@ -58,6 +58,9 @@ def _now_ist() -> datetime:
 
 
 def _update_candle_and_orb(index_name: str, ltp: float, ist_now: datetime):
+    # Only the regular session builds candles/ORB. 15:30 is allowed so the 15:29 candle can finalise.
+    if not ((9, 15) <= (ist_now.hour, ist_now.minute) <= (15, 30)):
+        return
     minute_key = ist_now.strftime("%H:%M")
     today_str = ist_now.strftime("%Y-%m-%d")
 

@@ -76,7 +76,7 @@ def _vix_trend_pct() -> Optional[float]:
 async def _market_analyst(signal_doc: Dict[str, Any], strategy_key: str) -> Tuple[float, Dict[str, Any]]:
     from app.services.dhan_websocket import get_live_vix
     from app.services.candle_storage import get_today_candles
-    from app.services.regime_indicators import calculate_adx
+    from app.services.regime_indicators import get_adx_5m
     from app.services.strategy_engine import STRATEGY_REGIME_CATEGORY
 
     index_name = signal_doc["index_name"]
@@ -97,7 +97,7 @@ async def _market_analyst(signal_doc: Dict[str, Any], strategy_key: str) -> Tupl
     vix_score = _clamp(vix_score)
 
     # Regime strength for this strategy's category
-    adx = calculate_adx(await get_today_candles(index_name))
+    adx = await get_adx_5m(index_name)
     category = STRATEGY_REGIME_CATEGORY.get(strategy_key, "neutral")
     if adx is None or category == "neutral":
         regime_score = 0.0
