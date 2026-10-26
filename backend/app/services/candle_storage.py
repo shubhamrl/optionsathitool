@@ -7,6 +7,15 @@ logger = logging.getLogger(__name__)
 IST_OFFSET = timedelta(hours=5, minutes=30)
 COLLECTION = "intraday_candles"
 
+# Regular NSE session only (IST). Dhan also streams index prints in the pre-open call
+# auction (before 09:15); those candles were polluting ADX/VWAP/EMA/RSI etc.
+SESSION_START = "09:15"
+SESSION_END = "15:29"
+
+
+def _in_session(minute_label: str) -> bool:
+    return SESSION_START <= (minute_label or "") <= SESSION_END
+
 _db_ref = None  # cached db handle, set on first use
 
 
@@ -58,7 +67,7 @@ async def get_today_candles(index_name: str) -> List[Dict[str, Any]]:
         doc = await db[COLLECTION].find_one({"index_name": index_name, "date": date_key})
         if not doc:
             return []
-        return doc.get("candles", [])
+        return [c for c in doc.get("candles", []) if _in_session(c.get("m", ""))]
     except Exception as e:
         logger.warning(f"⚠️ Candle fetch failed for {index_name} (non-critical): {str(e)}")
         return []
@@ -125,7 +134,12 @@ async def get_recent_days_candles(index_name: str, days: int = RETAIN_DAYS) -> L
         cursor = db[COLLECTION].find({"index_name": index_name}).sort("date", -1).limit(days)
         docs = await cursor.to_list(length=days)
         docs.reverse()  # oldest first
-        return [d.get("candles", []) for d in docs if d.get("candles")]
+        days_out = []
+        for d in docs:
+            session_candles = [c for c in d.get("candles", []) if _in_session(c.get("m", ""))]
+            if session_candles:
+                days_out.append(session_candles)
+        return days_out
     except Exception as e:
         logger.warning(f"⚠️ Multi-day candle fetch failed for {index_name} (non-critical): {str(e)}")
         return []

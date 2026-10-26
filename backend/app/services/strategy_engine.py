@@ -247,7 +247,7 @@ async def _build_context(db, index_name: str) -> Optional[Dict[str, Any]]:
     snapshot/candles."""
     from app.services.dhan_websocket import index_candle_store, market_data_store, get_live_vix
     from app.services.candle_storage import get_today_candles
-    from app.services.regime_indicators import calculate_adx, get_regime
+    from app.services.regime_indicators import get_adx_5m, get_regime
 
     snapshot = _SNAPSHOT_CACHE.get(index_name) or await db.market_snapshots.find_one({"index_name": index_name})
     # never act on stale data (e.g. Dhan API down / token expired)
@@ -259,7 +259,7 @@ async def _build_context(db, index_name: str) -> Optional[Dict[str, Any]]:
     # 🎯 Regime computed ONCE per index per scan-cycle (not per-strategy) —
     # reuses the same 1-min candle history already persisted for other needs.
     today_candles = await get_today_candles(index_name)
-    adx_value = calculate_adx(today_candles)
+    adx_value = await get_adx_5m(index_name)
     regime = get_regime(adx_value)
 
     oc = snapshot["oc"]
