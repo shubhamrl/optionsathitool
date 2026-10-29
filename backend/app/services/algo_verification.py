@@ -443,6 +443,17 @@ async def _resolve_pending(db, pending: Dict[str, Any]):
         )
         return
 
+    if signal_doc.get("status") != "ACTIVE":
+        await db.algo_pending_verification.update_one(
+            {"_id": pending["_id"], "resolved": False},
+            {"$set": {
+                "resolved": True, "confirmed": False, "resolved_at": datetime.utcnow(),
+                "profit_reason": f"signal already {signal_doc.get('status')} before confirmation",
+            }}
+        )
+        logger.info(f"❌ [ALGO REJECTED] {strategy_key} on {index_name} — signal already {signal_doc.get('status')} before the {VERIFICATION_WINDOW_SECONDS}s window ended.")
+        return
+
     evald = None
     try:
         evald = await _evaluate_layers(signal_doc, strategy_key)

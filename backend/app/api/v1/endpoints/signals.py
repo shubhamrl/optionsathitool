@@ -1050,7 +1050,7 @@ def _signal_r(doc: Dict[str, Any]) -> Optional[float]:
 
 
 def _gate_bucket(label: str) -> Dict[str, Any]:
-    return {"label": label, "signals": 0, "target_hit": 0, "sl_hit": 0, "expired": 0, "r_sum": 0.0, "r_n": 0}
+    return {"label": label, "signals": 0, "target_hit": 0, "sl_hit": 0, "expired": 0, "r_sum": 0.0, "r_n": 0, "outliers": 0}
 
 
 def _gate_add(bucket: Dict[str, Any], doc: Dict[str, Any]):
@@ -1064,6 +1064,9 @@ def _gate_add(bucket: Dict[str, Any], doc: Dict[str, Any]):
         bucket["expired"] += 1
     r = _signal_r(doc)
     if r is not None:
+        if r < -3.0 or r > 5.0:
+            bucket["outliers"] += 1
+            r = max(-3.0, min(5.0, r))
         bucket["r_sum"] += r
         bucket["r_n"] += 1
 
@@ -1073,7 +1076,7 @@ def _gate_finalize(b: Dict[str, Any]) -> Dict[str, Any]:
     wr = round(b["target_hit"] / decided * 100, 1) if decided else 0.0
     avg_r = (b["r_sum"] / b["r_n"]) if b["r_n"] else 0.0
     return {
-        "label": b["label"], "signals": b["signals"], "target_hit": b["target_hit"],
+        "label": b["label"] + (f"  ⚠️{b['outliers']} bad-R capped" if b["outliers"] else ""), "signals": b["signals"], "target_hit": b["target_hit"],
         "sl_hit": b["sl_hit"], "expired": b["expired"], "decided": decided,
         "win_rate_percentage": wr,
         "avg_r": round(avg_r, 2),

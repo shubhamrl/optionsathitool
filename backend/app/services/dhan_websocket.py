@@ -304,7 +304,16 @@ class DhanWebSocketClient:
                     outcome_code = OUTCOME_TARGET_HIT if status_update == "TARGET_HIT" else OUTCOME_SL_HIT
                     await update_signal_outcome(db, signal_id, outcome_code)
 
-                    if trade_id:
+                    # Close EVERY open paper trade on this signal (many users can hold the same
+                    # signal), not just the single trade_id the in-memory tracker remembers.
+                    linked = await db.paper_trades.find(
+                        {"signal_id": str(signal_id), "status": "OPEN"}, {"_id": 1}
+                    ).to_list(length=500)
+                    for _t in linked:
+                        await self._auto_square_off_paper_trade(
+                            db, str(_t["_id"]), current_ltp, status_update, broadcast_callback
+                        )
+                    if trade_id and not any(str(_t["_id"]) == str(trade_id) for _t in linked):
                         await self._auto_square_off_paper_trade(
                             db, trade_id, current_ltp, status_update, broadcast_callback
                         )
