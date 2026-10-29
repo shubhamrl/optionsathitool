@@ -325,8 +325,22 @@ async def _execute_strategy_signal(
     # ⚡ Real-time entry: prefer the live WebSocket tick over the REST snapshot price
     # (which can be 10-40s old). Ignored if it deviates >15% from the snapshot (bad-tick guard).
     _live_px = live_option_ltp(index_name, security_id) if security_id else None
-    if _live_px and entry_price > 0 and abs(_live_px - entry_price) / entry_price <= LIVE_PRICE_MAX_DEVIATION:
-        entry_price = _live_px
+    if _live_px and entry_price > 0:
+        if abs(_live_px - entry_price) / entry_price <= LIVE_PRICE_MAX_DEVIATION:
+            entry_price = _live_px
+        else:
+            logger.warning(f"⚠️ [PRICE CONFLICT] {index_name} {atm_strike}{selected_type}: snapshot ₹{entry_price} vs live ₹{_live_px} — signal skipped (bad data).")
+            return
+    # ATM option premium is ~0.5-3% of spot; far outside that the snapshot price is garbage
+    if spot > 0 and not (0.0005 <= entry_price / spot <= 0.05):
+        logger.warning(f"⚠️ [PRICE INSANE] {index_name} {atm_strike}{selected_type}: ₹{entry_price} vs spot {spot} — signal skipped.")
+        return
+    # ATM call and put should price within ~2x of each other
+    _ce_px = float((atm_node.get("ce") or {}).get("last_price") or 0.0)
+    _pe_px = float((atm_node.get("pe") or {}).get("last_price") or 0.0)
+    if _ce_px > 0 and _pe_px > 0 and max(_ce_px, _pe_px) / min(_ce_px, _pe_px) > 2.0:
+        logger.warning(f"⚠️ [PRICE MISMATCH] {index_name} {atm_strike}: CE ₹{_ce_px} vs PE ₹{_pe_px} — signal skipped.")
+        return
     if entry_price <= 0 or not security_id:
         return
 

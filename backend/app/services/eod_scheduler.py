@@ -162,6 +162,58 @@ async def _reconcile_active_signals(db, broadcast_callback=None):
             })
 
 
+def _ltp_for(index_name, security_id):
+    """Live option LTP: the trade's own index bucket first, then any bucket."""
+    from app.services.dhan_websocket import market_data_store
+    buckets = [market_data_store.get(index_name)] + list(market_data_store.values())
+    for bucket in buckets:
+        node = bucket.get(security_id) if isinstance(bucket, dict) else None
+        if isinstance(node, dict) and node.get("ltp", 0) > 0:
+            return float(node["ltp"])
+    return None
+
+
+async def _reconcile_open_paper_trades(db):
+    """Closes OPEN paper trades whose OWN target/SL has been crossed, using live LTP, independent of
+    the in-memory tracker."""
+    trades = await db.paper_trades.find({"status": "OPEN"}).to_list(length=500)
+    for t in trades:
+        sec = t.get("security_id", "")
+        target = float(t.get("target1") or 0.0)
+        sl = float(t.get("stop_loss") or 0.0)
+        if not sec or (target <= 0 and sl <= 0):
+            continue
+        ltp = _ltp_for(t.get("index_name", "NIFTY"), sec)
+        if ltp is None:
+            continue
+        if target > 0 and ltp >= target:
+            await _close_single_paper_trade(db, t["_id"], ltp, "Target Hit (Paper Reconcile)")
+        elif sl > 0 and ltp <= sl:
+            await _close_single_paper_trade(db, t["_id"], ltp, "Stop-Loss Hit (Paper Reconcile)")
+
+
+async def _paper_reconcile_loop():
+    from app.core.database import get_database
+    from app.core.market_hours import is_market_open
+    logger.info("🛡️ Paper-trade reconciler started (every 5s).")
+    try:
+        db = await get_database()
+        await db.paper_trades.create_index("status")
+    except Exception:
+        pass
+    while True:
+        try:
+            await asyncio.sleep(5)
+            if not is_market_open():
+                continue
+            db = await get_database()
+            await _reconcile_open_paper_trades(db)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Paper reconcile error: {str(e)}")
+
+
 async def _eod_close_paper_trades(db, query_filter: Dict[str, Any]) -> int:
     cursor = db.paper_trades.find({**query_filter, "status": "OPEN"})
     trades = await cursor.to_list(length=1000)
@@ -273,6 +325,7 @@ async def eod_auto_square_off_loop(broadcast_callback=None):
     from app.core.database import get_database
 
     logger.info("⏱️ EOD Auto Square-Off Scheduler started.")
+    asyncio.create_task(_paper_reconcile_loop())
 
     while True:
         try:
