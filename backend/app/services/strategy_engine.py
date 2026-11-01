@@ -72,7 +72,7 @@ async def _refresh_market_snapshot(db, index_name: str):
     _SNAPSHOT_CACHE[index_name] = {"index_name": index_name, "expiry": expiry, "spot": spot, "oc": oc, "updated_at": datetime.utcnow()}
     await db.market_snapshots.update_one(
         {"index_name": index_name},
-        {"$set": {"index_name": index_name, "expiry": expiry, "spot": spot, "oc": oc, "updated_at": datetime.utcnow()}},
+        {"$set": {"index_name": index_name, "expiry": expiry, "spot": spot, "updated_at": datetime.utcnow()}, "$unset": {"oc": ""}},
         upsert=True
     )
 STRATEGY_INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
