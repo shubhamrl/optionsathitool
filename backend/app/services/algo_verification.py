@@ -23,7 +23,7 @@ NEW_WALLET_STARTING_CAPITAL = 100000.0
 # ---------------- 5-layer scoring config (all tunable) ----------------
 W_MARKET = 0.35
 W_TECHNICAL = 0.50
-W_ML = 0.15              # kept low: ML shadow-table is still flat (see ADMIN > ML Readiness)
+W_ML = 0.0              # kept low: ML shadow-table is still flat (see ADMIN > ML Readiness)
 ML_BASELINE_WIN_RATE = 0.40
 ML_SCALE = 0.20
 

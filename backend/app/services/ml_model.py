@@ -8,6 +8,9 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 MODEL_DOC_ID = "target_predictor_v1"
+
+# Shadow predictions retired: ~4,800 samples showed no separation between confidence buckets.
+ML_PREDICTIONS_ENABLED = False
 MIN_STRATEGY_SAMPLES = 20  # strategies with fewer samples get bucketed as "OTHER"
 L2_REG = 0.01
 LEARNING_RATE = 0.15
@@ -209,6 +212,8 @@ async def predict_confidence(
     block anything; callers just store the value for later comparison via
     /admin/ml-shadow-performance.
     """
+    if not ML_PREDICTIONS_ENABLED:
+        return None
     model = await _get_model(db)
     if not model:
         return None

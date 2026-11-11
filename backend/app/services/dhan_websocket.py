@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.engine.ai_surveillance import AISurveillanceEngine
 from app.services.dhan_binary_parser import parse_dhan_binary_feed
 from app.services.feature_logger import update_signal_outcome, OUTCOME_TARGET_HIT, OUTCOME_SL_HIT
+from app.services.path_tracker import on_tick as path_on_tick
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +270,9 @@ class DhanWebSocketClient:
                 market_data_store[index_name][sec_id] = {}
             if ltp > 0:
                 market_data_store[index_name][sec_id]["ltp"] = round(ltp, 2)
+
+        if ltp > 0:
+            path_on_tick(sec_id, ltp)
 
         if sec_id in active_positions_tracker and ltp > 0:
             asyncio.create_task(self._evaluate_active_position_exit(sec_id, ltp, broadcast_callback))

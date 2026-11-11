@@ -15,6 +15,7 @@ from app.services.eod_scheduler import eod_auto_square_off_loop
 from app.services.strategy_engine import strategy_engine_loop
 from app.services.algo_verification import algo_verification_loop
 from app.services.telegram_dispatcher import start_telegram_dispatcher
+from app.services.path_tracker import start_path_tracker
 from app.services.strategies import batch1, batch2, batch3, batch4  # noqa: F401 — import registers strategies
 from app.api.v1.endpoints import signals, market_data, auth
 from app.api.v1.endpoints import paper_trade
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI):
 
     algo_task = asyncio.create_task(algo_verification_loop(broadcast_callback=global_broadcast))
     telegram_tasks = start_telegram_dispatcher()
+    path_tasks = start_path_tracker()
     logger.info("🤖 Algo Verification Engine Task Initialized in Background.")
 
     yield
@@ -61,7 +63,7 @@ async def lifespan(app: FastAPI):
     eod_task.cancel()
     strategy_task.cancel()
     algo_task.cancel()
-    for _t in telegram_tasks:
+    for _t in telegram_tasks + path_tasks:
         _t.cancel()
     await close_mongo_connection()
     logger.info("✅ Graceful Shutdown Complete.")

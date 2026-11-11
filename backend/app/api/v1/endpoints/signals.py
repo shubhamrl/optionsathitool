@@ -1132,6 +1132,173 @@ async def get_gate_report(
     }
 
 
+RR_TARGETS = (1.0, 1.3, 1.6, 2.0, 2.5, 3.0)
+RR_STOPS = (0.5, 1.0, 1.5, 2.0)
+RR_TIME_LIMITS = (None, 30)
+RR_INDEX_COMBOS = ((1.3, 1.0, None), (1.6, 1.0, None), (2.0, 1.0, None), (1.6, 1.5, None), (2.0, 1.5, None))
+
+
+def _rr_lv(x: float) -> str:
+    return str(int(round(x * 10)))
+
+
+def _rr_simulate(path: Dict[str, Any], target_r: float, stop_r: float, limit_min):
+    """Replay one signal's recorded path under a given (target, stop, time-stop).
+    Returns (gross_R, 'T'|'S'|'E') or None. A tie between target and stop counts as the STOP (conservative)."""
+    up_t = (path.get("up") or {}).get(_rr_lv(target_r))
+    dn_t = (path.get("down") or {}).get(_rr_lv(stop_r))
+    limit_s = limit_min * 60 if limit_min else None
+    if limit_s is not None:
+        if up_t is not None and up_t > limit_s:
+            up_t = None
+        if dn_t is not None and dn_t > limit_s:
+            dn_t = None
+    if up_t is not None and (dn_t is None or up_t < dn_t):
+        return target_r, "T"
+    if dn_t is not None:
+        return -stop_r, "S"
+    risk = path.get("risk") or 0
+    if risk <= 0:
+        return None
+    px = (path.get("snap") or {}).get(str(limit_min)) if limit_s is not None else path.get("last")
+    if px is None:
+        return None
+    r = (px - path["entry"]) / risk
+    return max(-stop_r, min(target_r, r)), "E"
+
+
+def _rr_cost_r(path: Dict[str, Any], r_gross: float, slip: float, qty: int, charges_fn) -> float:
+    entry, risk = path["entry"], path["risk"]
+    exit_px = max(0.05, entry + r_gross * risk)
+    try:
+        taxes = float(charges_fn(entry, exit_px, qty)["total_taxes"])
+    except Exception:
+        taxes = 0.0
+    return taxes / (risk * qty) + (2 * slip) / risk
+
+
+@router.get("/admin/rr-whatif")
+async def get_rr_whatif(
+    days: int = 45,
+    slip: float = 0.5,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """Replays every completed signal path under many (target, stop, time-stop) rules, net of REAL charges
+    (lot size + premium) and a slippage assumption (Rs per side)."""
+    from bson import ObjectId
+    from app.models.paper_trading import calculate_indian_option_charges, LOT_SIZES
+
+    days = max(1, min(days, 90))
+    slip = max(0.0, min(slip, 5.0))
+    since = datetime.utcnow() - timedelta(days=days)
+    all_paths = await db.signal_paths.find({"created_at": {"$gte": since}}).sort("created_at", 1).to_list(length=3000)
+    paths = [p for p in all_paths if p.get("complete")]
+    skipped = len(all_paths) - len(paths)
+    if not paths:
+        return {"success": True, "paths_used": 0, "paths_incomplete_skipped": skipped}
+
+    def evaluate(subset, t, s, m):
+        out = []
+        for p in subset:
+            sim = _rr_simulate(p, t, s, m)
+            if sim is None:
+                continue
+            g = sim[0]
+            qty = LOT_SIZES.get(p.get("index_name"), 25)
+            out.append((g, g - _rr_cost_r(p, g, slip, qty, calculate_indian_option_charges)))
+        return out
+
+    def summarize(vals):
+        n = len(vals)
+        if not n:
+            return {"n": 0, "win_rate": 0.0, "gross_avg_r": 0.0, "net_avg_r": 0.0, "net_total_r": 0.0}
+        wins = sum(1 for g, _ in vals if g > 0)
+        gross = sum(g for g, _ in vals)
+        net = sum(nv for _, nv in vals)
+        return {"n": n, "win_rate": round(wins / n * 100, 1), "gross_avg_r": round(gross / n, 3),
+                "net_avg_r": round(net / n, 3), "net_total_r": round(net, 1)}
+
+    half = len(paths) // 2
+    first, second = paths[:half], paths[half:]
+    grid = []
+    for t in RR_TARGETS:
+        for s in RR_STOPS:
+            for m in RR_TIME_LIMITS:
+                row = {"target_r": t, "stop_r": s, "time_limit_min": m, **summarize(evaluate(paths, t, s, m))}
+                row["h1_net_avg_r"] = summarize(evaluate(first, t, s, m))["net_avg_r"]
+                row["h2_net_avg_r"] = summarize(evaluate(second, t, s, m))["net_avg_r"]
+                row["is_baseline"] = (t == 1.3 and s == 1.0 and m is None)
+                grid.append(row)
+
+    base = next((r for r in grid if r["is_baseline"]), None)
+    for r in grid:
+        r["consistent"] = bool(
+            base and not r["is_baseline"] and r["n"] >= 30
+            and r["h1_net_avg_r"] >= base["h1_net_avg_r"] + 0.10
+            and r["h2_net_avg_r"] >= base["h2_net_avg_r"] + 0.10
+        )
+    grid_sorted = sorted(grid, key=lambda r: r["net_avg_r"], reverse=True)
+
+    by_index: Dict[str, Any] = {}
+    for idx in sorted({p.get("index_name") for p in paths if p.get("index_name")}):
+        subset = [p for p in paths if p.get("index_name") == idx]
+        by_index[idx] = [
+            {"target_r": t, "stop_r": s, **summarize(evaluate(subset, t, s, m))} for (t, s, m) in RR_INDEX_COMBOS
+        ]
+
+    sl_n = sl_then_t1 = t1_n = t1_then_t2 = 0
+    mfe_sum = mae_sum = 0.0
+    for p in paths:
+        up, dn = p.get("up") or {}, p.get("down") or {}
+        if "10" in dn:
+            sl_n += 1
+            if "13" in up and up["13"] > dn["10"]:
+                sl_then_t1 += 1
+        if "13" in up:
+            t1_n += 1
+            if "20" in up:
+                t1_then_t2 += 1
+        mfe_sum += p.get("mfe_r", 0.0)
+        mae_sum += p.get("mae_r", 0.0)
+
+    ids = []
+    for p in paths:
+        try:
+            ids.append(ObjectId(p["signal_id"]))
+        except Exception:
+            pass
+    status_map = {}
+    async for sd in db.signals.find({"_id": {"$in": ids}}, {"status": 1}):
+        status_map[str(sd["_id"])] = sd.get("status")
+    checked = matched = 0
+    for p in paths:
+        st = status_map.get(p["signal_id"])
+        t1 = round(float(p.get("t1_r") or 1.3), 1)
+        if st not in ("TARGET_HIT", "SL_HIT") or t1 not in RR_TARGETS:
+            continue
+        sim = _rr_simulate(p, t1, 1.0, None)
+        if not sim:
+            continue
+        checked += 1
+        if (sim[1] == "T" and st == "TARGET_HIT") or (sim[1] == "S" and st == "SL_HIT"):
+            matched += 1
+
+    return {
+        "success": True, "days": days, "slip_per_side": slip,
+        "paths_used": len(paths), "paths_incomplete_skipped": skipped,
+        "baseline_check": {"checked": checked, "match_pct": round(matched / checked * 100, 1) if checked else None},
+        "recovery": {
+            "sl_signals": sl_n, "sl_then_t1_pct": round(sl_then_t1 / sl_n * 100, 1) if sl_n else None,
+            "t1_signals": t1_n, "t1_then_2r_pct": round(t1_then_t2 / t1_n * 100, 1) if t1_n else None,
+            "avg_mfe_r": round(mfe_sum / len(paths), 2), "avg_mae_r": round(mae_sum / len(paths), 2),
+        },
+        "baseline": base,
+        "grid": grid_sorted[:20],
+        "by_index": by_index,
+    }
+
+
 @router.post("/admin/reset-accuracy-tracking")
 async def reset_accuracy_tracking(
     current_user: Dict[str, Any] = Depends(get_current_user),

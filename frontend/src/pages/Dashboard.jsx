@@ -229,6 +229,60 @@ export default function Dashboard() {
   const [gateReport, setGateReport] = useState(null);
   const [showGateReport, setShowGateReport] = useState(false);
 
+  const [rrData, setRrData] = useState(null);
+  const [showRrWhatIf, setShowRrWhatIf] = useState(false);
+  const [rrSlip, setRrSlip] = useState(0.5);
+
+  const fetchRrWhatIf = async (slip = rrSlip) => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/signals/admin/rr-whatif`, {
+        params: { days: 45, slip },
+      });
+      if (res.data && res.data.success) setRrData(res.data);
+    } catch (e) {}
+  };
+
+  const rrHead = (
+    <thead className="bg-slate-950/60 text-slate-500 border-b border-slate-800 uppercase text-[9px]">
+      <tr>
+        <th className="p-2">Target</th>
+        <th className="p-2">Stop</th>
+        <th className="p-2">Exit</th>
+        <th className="p-2">N</th>
+        <th className="p-2">Win %</th>
+        <th className="p-2">Net R/trade</th>
+        <th className="p-2">Net R total</th>
+        <th className="p-2">1st half</th>
+        <th className="p-2">2nd half</th>
+      </tr>
+    </thead>
+  );
+
+  const rrRow = (r, key) => (
+    <tr
+      key={key}
+      className={`border-b border-slate-800/50 ${r.is_baseline ? "bg-yellow-500/10" : ""}`}
+    >
+      <td className="p-2 font-semibold text-slate-200">
+        {r.target_r}R{r.is_baseline ? " ★" : ""}
+        {r.consistent ? " ✅" : ""}
+      </td>
+      <td className="p-2 text-slate-300">{r.stop_r}R</td>
+      <td className="p-2 text-slate-400">
+        {r.time_limit_min ? `${r.time_limit_min}m` : "EOD"}
+      </td>
+      <td className="p-2 text-slate-400">{r.n}</td>
+      <td className="p-2 text-slate-300">{r.win_rate}%</td>
+      <td className={`p-2 font-bold ${r.net_avg_r >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+        {r.net_avg_r >= 0 ? "+" : ""}
+        {r.net_avg_r}R
+      </td>
+      <td className="p-2 text-slate-400">{r.net_total_r}R</td>
+      <td className="p-2 text-slate-500">{r.h1_net_avg_r ?? "—"}</td>
+      <td className="p-2 text-slate-500">{r.h2_net_avg_r ?? "—"}</td>
+    </tr>
+  );
+
   const fetchGateReport = async () => {
     try {
       const res = await axios.get(`${API_BASE_URL}/signals/admin/gate-report`);
@@ -1909,7 +1963,22 @@ export default function Dashboard() {
         {activeTab === "ADMIN" && (
           <div className="space-y-6">
             {/* Toggle buttons for the collapsible sections */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+              <button
+                onClick={() => {
+                  const next = !showRrWhatIf;
+                  setShowRrWhatIf(next);
+                  if (next) fetchRrWhatIf();
+                }}
+                className="bg-teal-950/30 border border-teal-500/30 rounded-2xl p-4 flex items-center justify-between hover:bg-teal-950/50 transition-all"
+              >
+                <span className="text-sm font-bold text-teal-300 flex items-center gap-2">
+                  🧭 RR What-If
+                </span>
+                <span className="text-xs text-slate-500">
+                  {showRrWhatIf ? "▾" : "▸"}
+                </span>
+              </button>
               <button
                 onClick={() => {
                   const next = !showGateReport;
@@ -2002,6 +2071,130 @@ export default function Dashboard() {
                 </span>
               </button>
             </div>
+
+            {showRrWhatIf && (
+              <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-4 md:p-6 space-y-5">
+                <div>
+                  <h3 className="text-sm md:text-base font-bold text-slate-200">
+                    🧭 RR What-If: wahi signals, alag Target / Stop
+                  </h3>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Har signal ka entry se EOD tak ka price-path save hota hai, phir alag
+                    (target, stop) simulate hota hai. Net R me asli charges (lot size aur
+                    premium ke hisaab se) + slippage hai. R = us signal ka apna risk. ★ =
+                    abhi ka rule. ✅ = dono aadhe data me baseline se ≥ +0.10R behtar aur N ≥ 30.
+                    Tie ho to Stop maana jata hai. Tick-level fill thoda optimistic hota hai.
+                  </p>
+                  <div className="flex gap-2 mt-2 flex-wrap">
+                    {[0, 0.5, 1].map((v) => (
+                      <button
+                        key={v}
+                        onClick={() => {
+                          setRrSlip(v);
+                          fetchRrWhatIf(v);
+                        }}
+                        className={`px-3 py-1 rounded-lg text-[10px] font-bold ${rrSlip === v ? "bg-teal-500 text-slate-950" : "bg-slate-800 text-slate-300"}`}
+                      >
+                        Slippage ₹{v}/side
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {rrData ? (
+                  rrData.paths_used > 0 ? (
+                    <>
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                        <div className="bg-slate-950/50 rounded-xl p-3">
+                          <p className="text-[10px] text-slate-500 uppercase mb-0.5">Paths used</p>
+                          <p className="text-lg font-bold text-slate-100">{rrData.paths_used}</p>
+                        </div>
+                        <div className="bg-slate-950/50 rounded-xl p-3">
+                          <p className="text-[10px] text-slate-500 uppercase mb-0.5">Sanity match</p>
+                          <p className="text-lg font-bold text-cyan-400">
+                            {rrData.baseline_check?.match_pct ?? "—"}%
+                          </p>
+                        </div>
+                        <div className="bg-slate-950/50 rounded-xl p-3">
+                          <p className="text-[10px] text-slate-500 uppercase mb-0.5">SL ke baad T1 tak gaye</p>
+                          <p className="text-lg font-bold text-amber-400">
+                            {rrData.recovery?.sl_then_t1_pct ?? "—"}%
+                          </p>
+                        </div>
+                        <div className="bg-slate-950/50 rounded-xl p-3">
+                          <p className="text-[10px] text-slate-500 uppercase mb-0.5">T1 ke baad 2R tak gaye</p>
+                          <p className="text-lg font-bold text-emerald-400">
+                            {rrData.recovery?.t1_then_2r_pct ?? "—"}%
+                          </p>
+                        </div>
+                        <div className="bg-slate-950/50 rounded-xl p-3">
+                          <p className="text-[10px] text-slate-500 uppercase mb-0.5">Avg MFE / MAE</p>
+                          <p className="text-lg font-bold text-slate-100">
+                            +{rrData.recovery?.avg_mfe_r} / {rrData.recovery?.avg_mae_r}R
+                          </p>
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-slate-500">
+                        Sanity match = simulate kiya hua abhi ka rule (1.3R target / 1.0R stop) asli
+                        TARGET_HIT/SL_HIT se kitna milta hai. 90% se kam ho to is data par bharosa mat karo.
+                      </p>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs text-slate-300 min-w-[620px]">
+                          {rrHead}
+                          <tbody>
+                            {rrData.baseline && rrRow(rrData.baseline, "base")}
+                            {(rrData.grid || [])
+                              .filter((r) => !r.is_baseline)
+                              .slice(0, 14)
+                              .map((r, i) => rrRow(r, `g${i}`))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {Object.entries(rrData.by_index || {}).map(([idx, rows]) => (
+                        <div key={idx}>
+                          <p className="text-xs font-bold text-teal-300 mb-2">{idx}</p>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left text-xs text-slate-300 min-w-[420px]">
+                              <thead className="bg-slate-950/60 text-slate-500 border-b border-slate-800 uppercase text-[9px]">
+                                <tr>
+                                  <th className="p-2">Target</th>
+                                  <th className="p-2">Stop</th>
+                                  <th className="p-2">N</th>
+                                  <th className="p-2">Win %</th>
+                                  <th className="p-2">Net R/trade</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {rows.map((r) => (
+                                  <tr key={`${idx}-${r.target_r}-${r.stop_r}`} className="border-b border-slate-800/50">
+                                    <td className="p-2 text-slate-200">{r.target_r}R</td>
+                                    <td className="p-2">{r.stop_r}R</td>
+                                    <td className="p-2 text-slate-400">{r.n}</td>
+                                    <td className="p-2">{r.win_rate}%</td>
+                                    <td className={`p-2 font-bold ${r.net_avg_r >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                                      {r.net_avg_r >= 0 ? "+" : ""}{r.net_avg_r}R
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  ) : (
+                    <p className="text-xs text-slate-500 text-center py-4">
+                      Abhi complete paths nahi hain (jo signal din ke end tak track hue wahi gine jate hain).
+                      Deploy ke baad pehle market-din ke baad aana.
+                    </p>
+                  )
+                ) : (
+                  <p className="text-xs text-slate-500 text-center py-4">Loading...</p>
+                )}
+              </div>
+            )}
 
             {showGateReport && (
               <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-4 md:p-6 space-y-5">

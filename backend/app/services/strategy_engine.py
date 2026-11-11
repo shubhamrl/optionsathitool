@@ -13,6 +13,7 @@ from app.engine.risk_manager import risk_manager
 from app.services.feature_logger import log_signal_features
 from app.services.auto_trader import auto_execute_for_all_users
 from app.services.algo_verification import queue_for_verification
+from app.services.path_tracker import register_signal as path_register
 from app.services.signal_gates import evaluate_gate, live_option_ltp, prewarm_atm_ticks, LIVE_PRICE_MAX_DEVIATION
 
 _SNAPSHOT_CACHE = {}   # latest option-chain snapshot per index, kept in memory (saves Atlas reads)
@@ -424,6 +425,7 @@ async def _execute_strategy_signal(
 
     from app.services.dhan_websocket import register_token_index_mapping
     register_token_index_mapping({security_id: index_name})
+    path_register(signal_doc)
     track_active_position_trade(
         security_id=security_id, signal_id=signal_id,
         target=risk_result["target1"], sl=risk_result["stop_loss"]
