@@ -27,7 +27,7 @@ MIN_AGREE = 2
 BLOCK_ON_OPPOSITE = True           # a live opposite-direction vote cancels the agreement
 
 # "STRATEGY_KEY:INDEX" combos that never wait for a second strategy (remove to go pure 2-agree)
-SOLO_FAST_LANE = {"MULTI_TIMEFRAME:FINNIFTY"}
+SOLO_FAST_LANE = set()
 
 # Instant "second opinion": live price-momentum counts as one extra agreeing vote.
 MOMENTUM_COSIGN = False

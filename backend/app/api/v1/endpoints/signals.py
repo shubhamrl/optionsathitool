@@ -1025,7 +1025,7 @@ async def get_ml_shadow_performance(
     return {"success": True, "buckets": results, "model_info": model_info}
 
 
-GATE_REPORT_COST_R = 0.15   # assumed round-trip charges per trade, in R (~₹80 on ~₹550 risk)
+GATE_REPORT_COST_R = 0.30   # assumed round-trip charges per trade, in R (~₹80 on ~₹550 risk)
 
 
 def _signal_r(doc: Dict[str, Any]) -> Optional[float]:
@@ -1087,14 +1087,14 @@ def _gate_finalize(b: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.get("/admin/gate-report")
 async def get_gate_report(
-    days: int = 14,
+    days: int = 365,
     current_user: Dict[str, Any] = Depends(get_current_user),
     db=Depends(get_database)
 ):
     """Performance of scanner signals created AFTER the confluence/sleep-window gate went live
     (they carry confluence_count / in_sleep_window), split by how many strategies agreed,
     by sleeping-window vs outside, and by day."""
-    days = max(1, min(days, 60))
+    days = max(1, min(days, 365))
     ist_offset = timedelta(hours=5, minutes=30)
     since = datetime.utcnow() - timedelta(days=days)
 
@@ -1103,7 +1103,7 @@ async def get_gate_report(
         {"status": 1, "entry_price": 1, "stop_loss": 1, "shz_upper": 1, "exit_ltp": 1,
          "confluence_count": 1, "in_sleep_window": 1, "created_at": 1}
     )
-    docs = await cursor.to_list(length=5000)
+    docs = await cursor.to_list(length=20000)
 
     conf = {1: _gate_bucket("1 (solo lane / gate off)"), 2: _gate_bucket("2 agree"), 3: _gate_bucket("3+ agree")}
     win = {True: _gate_bucket("Sleeping window (11:00-14:00)"), False: _gate_bucket("Outside window")}

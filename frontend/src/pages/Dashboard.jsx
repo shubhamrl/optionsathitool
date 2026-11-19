@@ -19,7 +19,7 @@ import {
   Radar,
 } from "lucide-react";
 
-const INDICES = ["NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY"];
+const INDICES = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 
 const isLocal =
   typeof window !== "undefined" &&
@@ -116,7 +116,6 @@ export default function Dashboard() {
   const [indicesLiveData, setIndicesLiveData] = useState({
     NIFTY: 0,
     BANKNIFTY: 0,
-    SENSEX: 0,
     FINNIFTY: 0,
   });
   // Admin States
@@ -243,7 +242,7 @@ export default function Dashboard() {
   };
 
   const rrHead = (
-    <thead className="bg-slate-950/60 text-slate-500 border-b border-slate-800 uppercase text-[9px]">
+    <thead className="bg-slate-950 sticky top-0 z-10 text-slate-500 border-b border-slate-800 uppercase text-[9px]">
       <tr>
         <th className="p-2">Target</th>
         <th className="p-2">Stop</th>
@@ -291,7 +290,7 @@ export default function Dashboard() {
   };
 
   const gateTableHead = (
-    <thead className="bg-slate-950/60 text-slate-500 border-b border-slate-800 uppercase text-[9px]">
+    <thead className="bg-slate-950 sticky top-0 z-10 text-slate-500 border-b border-slate-800 uppercase text-[9px]">
       <tr>
         <th className="p-2">Group</th>
         <th className="p-2">Signals</th>
@@ -2116,13 +2115,13 @@ export default function Dashboard() {
                           </p>
                         </div>
                         <div className="bg-slate-950/50 rounded-xl p-3">
-                          <p className="text-[10px] text-slate-500 uppercase mb-0.5">SL ke baad T1 tak gaye</p>
+                          <p className="text-[10px] text-slate-500 uppercase mb-0.5">SL ke baad (din me kabhi) T1 tak</p>
                           <p className="text-lg font-bold text-amber-400">
                             {rrData.recovery?.sl_then_t1_pct ?? "—"}%
                           </p>
                         </div>
                         <div className="bg-slate-950/50 rounded-xl p-3">
-                          <p className="text-[10px] text-slate-500 uppercase mb-0.5">T1 ke baad 2R tak gaye</p>
+                          <p className="text-[10px] text-slate-500 uppercase mb-0.5">T1 ke baad (din me kabhi) 2R tak</p>
                           <p className="text-lg font-bold text-emerald-400">
                             {rrData.recovery?.t1_then_2r_pct ?? "—"}%
                           </p>
@@ -2139,19 +2138,20 @@ export default function Dashboard() {
                         TARGET_HIT/SL_HIT se kitna milta hai. 90% se kam ho to is data par bharosa mat karo.
                       </p>
 
-                      <div className="overflow-x-auto">
+                      <div className="max-h-[320px] overflow-auto rounded-xl border border-slate-800">
                         <table className="w-full text-left text-xs text-slate-300 min-w-[620px]">
                           {rrHead}
                           <tbody>
                             {rrData.baseline && rrRow(rrData.baseline, "base")}
                             {(rrData.grid || [])
                               .filter((r) => !r.is_baseline)
-                              .slice(0, 14)
+                              .slice(0, 30)
                               .map((r, i) => rrRow(r, `g${i}`))}
                           </tbody>
                         </table>
                       </div>
 
+                      <div className="max-h-[300px] overflow-y-auto space-y-4 pr-1">
                       {Object.entries(rrData.by_index || {}).map(([idx, rows]) => (
                         <div key={idx}>
                           <p className="text-xs font-bold text-teal-300 mb-2">{idx}</p>
@@ -2183,6 +2183,7 @@ export default function Dashboard() {
                           </div>
                         </div>
                       ))}
+                      </div>
                     </>
                   ) : (
                     <p className="text-xs text-slate-500 text-center py-4">
@@ -2203,7 +2204,7 @@ export default function Dashboard() {
                     🚦 Gate Report: Confluence aur Sleeping Window
                   </h3>
                   <p className="text-[10px] text-slate-500 mt-1">
-                    Sirf gate lagne ke baad ke signals (last {gateReport?.days || 14} din).
+                    Gate lagne ke baad ke sab signals (jab se gate live hua, aaj tak).
                     Net R = gross R − {gateReport?.cost_r_assumed ?? 0.15}R assumed charges
                     per trade. Jis row me 30 se kam decided hon, uske number par bharosa mat karo.
                   </p>
@@ -2238,12 +2239,37 @@ export default function Dashboard() {
 
                       <div>
                         <p className="text-xs font-bold text-yellow-300 mb-2">
-                          Din ke hisaab se (signal count bhi dekho)
+                          Din ke hisaab se: sab din, naya din upar (neeche scroll karo)
                         </p>
-                        <div className="overflow-x-auto">
+                        <div className="max-h-[360px] overflow-auto rounded-xl border border-slate-800">
                           <table className="w-full text-left text-xs text-slate-300 min-w-[560px]">
                             {gateTableHead}
-                            <tbody>{renderGateRows(gateReport.by_day)}</tbody>
+                            <tbody>
+                              {renderGateRows([
+                                (() => {
+                                  const d = gateReport.by_day || [];
+                                  const sum = (k) => d.reduce((a, r) => a + (r[k] || 0), 0);
+                                  const th = sum("target_hit");
+                                  const sl = sum("sl_hit");
+                                  const ex = sum("expired");
+                                  const nt = sum("net_total_r");
+                                  const decided = th + sl;
+                                  const resolved = decided + ex;
+                                  return {
+                                    label: `TOTAL (${d.length} din)`,
+                                    signals: sum("signals"),
+                                    target_hit: th,
+                                    sl_hit: sl,
+                                    expired: ex,
+                                    decided,
+                                    win_rate_percentage: decided ? +((th / decided) * 100).toFixed(1) : 0,
+                                    net_avg_r: resolved ? +(nt / resolved).toFixed(2) : 0,
+                                    net_total_r: +nt.toFixed(1),
+                                  };
+                                })(),
+                                ...(gateReport.by_day || []),
+                              ])}
+                            </tbody>
                           </table>
                         </div>
                       </div>

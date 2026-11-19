@@ -267,6 +267,22 @@ async def _build_context(db, index_name: str) -> Optional[Dict[str, Any]]:
     from app.engine.confluence_math import calculate_pcr_and_sentiment
     pcr, sentiment = calculate_pcr_and_sentiment(oc)
 
+    # 📊 Dashboard ke PCR / Regime cards ko asli values (pehle 1.0 / NEUTRAL par atke the)
+    _store = market_data_store.get(index_name)
+    if _store is not None:
+        _p = round(float(pcr), 2)
+        _store["pcr"] = _p
+        _mood = "BULLISH" if _p > 1.1 else ("BEARISH" if _p < 0.9 else "NEUTRAL")
+        _store["trend"] = f"{str(regime).upper()} · {_mood}"
+
+    # 📊 Feed the dashboard's PCR / Regime cards with REAL values (they were frozen at 1.0 / NEUTRAL).
+    _store = market_data_store.get(index_name)
+    if _store is not None:
+        _p = round(float(pcr), 2)
+        _store["pcr"] = _p
+        _mood = "BULLISH" if _p > 1.1 else ("BEARISH" if _p < 0.9 else "NEUTRAL")
+        _store["trend"] = f"{str(regime).upper()} · {_mood}"
+
     return {
         "spot": snapshot["spot"],
         "oc": oc,
